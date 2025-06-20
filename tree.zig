@@ -16,8 +16,8 @@ const NodeID = union(enum) {
 const Branch = struct {
     color: enum { black, red } = .black,
     offset: u32,
-    left: NodeID,
-    right: NodeID,
+    parent: ?u32 = null,
+    children: [2]NodeID = undefined, // left, right
 };
 
 const Leaf = struct {
@@ -37,41 +37,32 @@ pub fn insert(self: *Self, offset: u32, value: u32) !void {
     var node_i = self.root;
     const offsets = self.leaves.items(.offset);
     var parent: ?u32 = null;
-    var left = false;
+    var right: bool = undefined;
     while (true) {
         switch (node_i) {
             .branch => |branch_i| {
                 const branch = self.branches.get(branch_i);
                 parent = branch_i;
-                if (offset >= branch.offset) {
-                    node_i = branch.right;
-                    left = false;
-                } else {
-                    node_i = branch.left;
-                    left = true;
-                }
+                right = offset >= branch.offset;
+                node_i = branch.children[@intFromBool(right)];
             },
             .leaf => |leaf_i| {
                 const leaf_offset = offsets[leaf_i];
-                try self.branches.append(self.alloc, if (offset > leaf_offset) .{
-                    .offset = leaf_offset,
-                    .left = .{ .leaf = leaf_i },
-                    .right = .{ .leaf = i },
-                } else .{
-                    .offset = offset,
-                    .left = .{ .leaf = i },
-                    .right = .{ .leaf = leaf_i },
-                });
+                right = offset >= leaf_offset;
+                var branch: Branch = .{
+                    .offset = if (right) leaf_offset else offset,
+                    .parent = parent,
+                };
+                branch.children[@intFromBool(right)] = .{ .leaf = i };
+                branch.children[@intFromBool(!right)] = .{ .leaf = leaf_i };
 
+                try self.branches.append(self.alloc, branch);
                 const branch_i: NodeID = .{ .branch = @intCast(self.branches.len - 1) };
+
                 if (std.meta.eql(node_i, self.root)) self.root = branch_i;
                 if (parent) |parent_i| {
                     var parent_node = self.branches.get(parent_i);
-                    if (left) {
-                        parent_node.left = branch_i;
-                    } else {
-                        parent_node.right = branch_i;
-                    }
+                    parent_node.children[@intFromBool(right)] = branch_i;
                     self.branches.set(parent_i, parent_node);
                 }
                 break;
@@ -94,9 +85,9 @@ fn printNode(self: *const Self, node_i: NodeID) void {
         .branch => |branch_i| {
             const node = self.branches.get(branch_i);
             std.debug.print("({c}{d}, ", .{ @as(u8, if (node.color == .black) 'b' else 'r'), node.offset });
-            printNode(self, node.left);
+            printNode(self, node.children[0]);
             std.debug.print(", ", .{});
-            printNode(self, node.right);
+            printNode(self, node.children[1]);
             std.debug.print(")", .{});
         },
     }
@@ -117,18 +108,18 @@ test "basic insert" {
 
     try tree.insert(0, 1);
     var parent = tree.branches.get(tree.root.branch);
-    var left = tree.leaves.get(parent.left.leaf);
-    const right = tree.leaves.get(parent.right.leaf);
+    var left = tree.leaves.get(parent.children[0].leaf);
+    const right = tree.leaves.get(parent.children[1].leaf);
     try expectEqual(0, parent.offset);
     try expectEqual(0, left.offset);
     try expectEqual(1, right.offset);
 
     try tree.insert(2, 2);
     parent = tree.branches.get(tree.root.branch);
-    left = tree.leaves.get(parent.left.leaf);
-    const parent_right = tree.branches.get(parent.right.branch);
-    const right_left = tree.leaves.get(parent_right.left.leaf);
-    const right_right = tree.leaves.get(parent_right.right.leaf);
+    left = tree.leaves.get(parent.children[0].leaf);
+    const parent_right = tree.branches.get(parent.children[1].branch);
+    const right_left = tree.leaves.get(parent_right.children[0].leaf);
+    const right_right = tree.leaves.get(parent_right.children[1].leaf);
 
     try expectEqual(0, parent.offset);
     try expectEqual(0, left.offset);
