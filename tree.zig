@@ -1,3 +1,10 @@
+// TODO:
+// - Finish writing tests
+// - Change leaf to have slices and finalize API
+// - Add next field in leaf struct to support iteration
+// - Embed in larger buffer struct and remove alloc field
+// - Benchmark?
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -91,7 +98,7 @@ fn rebalance(self: *Self, branch_i: u32) void {
     var branches = self.branches.slice();
     var colors = branches.items(.color);
     var color = colors[branch_i];
-    const parents = branches.items(.parent);
+    var parents = branches.items(.parent);
     var childrens = branches.items(.children);
     var node_i = branch_i;
 
@@ -103,10 +110,11 @@ fn rebalance(self: *Self, branch_i: u32) void {
             // Check uncle and switch colors, rebalance as necessary
             const grandparent_i = parents[parent_i] orelse continue;
             const children = childrens[grandparent_i];
-            // TODO: Refactor? Seems inefficient
+            // Have to use eql here because the child could be a leaf
             const right = std.meta.eql(children[1], .{ .branch = parent_i });
             const right_i = @intFromBool(right);
-            const uncle_i = children[right_i];
+            const left_i = 1 - right_i;
+            const uncle_i = children[left_i];
 
             switch (uncle_i) {
                 .branch => |uncle_branch_i| { // Recolor
@@ -114,22 +122,23 @@ fn rebalance(self: *Self, branch_i: u32) void {
                     colors[uncle_branch_i] = .black;
                 },
                 .leaf => { // Rotate
-                    const left_i = 1 - right_i;
                     childrens[grandparent_i][right_i] = childrens[parent_i][left_i];
                     childrens[parent_i][left_i] = .{ .branch = grandparent_i };
+                    parents[parent_i] = parents[grandparent_i];
+                    parents[grandparent_i] = parent_i;
 
                     colors[parent_i] = .black;
                     colors[grandparent_i] = .red;
+
+                    if (self.root.branch == grandparent_i) self.root.branch = parent_i;
+                    if (parents[parent_i]) |greatgrandparent_i| {
+                        childrens[greatgrandparent_i][right_i] = .{ .branch = parent_i };
+                    }
                 },
-                // self.rotate(grandparent_i, right),
             }
         }
     }
 }
-
-// fn rotate(self: *Self, grandparent_i: u32, right: bool) void {
-    // var colors = self.branches.items(.color);
-// }
 
 pub const ValidationError = error {
     RootIsRed,
@@ -220,6 +229,30 @@ test "basic insert" {
     try expectEqual(1, right_left.offset);
     try expectEqual(2, right_right.offset);
 }
+
+// TODO: Insert left, multiple rotation?
+test "insertion with rotation" {
+    var tree: Self = .{
+        .alloc = std.testing.allocator,
+        .root = .{ .leaf = 0 },
+    };
+    try tree.leaves.append(tree.alloc, .{
+        .offset = 1,
+        .value = 0,
+    });
+    defer tree.deinit();
+
+    try tree.insert(2, 1);
+    try tree.validate();
+
+    try tree.insert(3, 2);
+    try tree.validate();
+
+    try tree.insert(4, 3);
+    try tree.validate();
+}
+
+// TODO: Fuzz testing?
 
 test "validate" {
     const leaf: NodeID = .{ .leaf = 0 };
