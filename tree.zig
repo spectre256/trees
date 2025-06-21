@@ -50,6 +50,7 @@ pub fn insert(self: *Self, offset: u32, value: u32) !void {
                 const leaf_offset = offsets[leaf_i];
                 right = offset >= leaf_offset;
                 var branch: Branch = .{
+                    .color = .red,
                     .offset = if (right) leaf_offset else offset,
                     .parent = parent,
                 };
@@ -65,11 +66,57 @@ pub fn insert(self: *Self, offset: u32, value: u32) !void {
                     parent_node.children[@intFromBool(right)] = branch_i;
                     self.branches.set(parent_i, parent_node);
                 }
+
+                self.rebalance(branch_i.branch);
                 break;
             },
         }
     }
 }
+
+// Traverse up the tree and check colors/rebalance
+fn rebalance(self: *Self, branch_i: u32) void {
+    var colors = self.branches.items(.color);
+    var color = colors[branch_i];
+    const parents = self.branches.items(.parent);
+    var childrens = self.branches.items(.children);
+    var node_i = branch_i;
+
+    while (parents[node_i]) |parent_i| : ({
+        node_i = parent_i;
+        color = colors[parent_i];
+    }) {
+        if (color == .red and colors[parent_i] == .red) {
+            // Check uncle and switch colors, rebalance as necessary
+            const grandparent_i = parents[parent_i] orelse continue;
+            const children = childrens[grandparent_i];
+            // TODO: Refactor? Seems inefficient
+            const right = std.meta.eql(children[1], .{ .branch = parent_i });
+            const right_i = @intFromBool(right);
+            const uncle_i = children[right_i];
+
+            switch (uncle_i) {
+                .branch => |uncle_branch_i| { // Recolor
+                    colors[parent_i] = .black;
+                    colors[uncle_branch_i] = .black;
+                },
+                .leaf => { // Rotate
+                    const left_i = 1 - right_i;
+                    childrens[grandparent_i][right_i] = childrens[parent_i][left_i];
+                    childrens[parent_i][left_i] = .{ .branch = grandparent_i };
+
+                    colors[parent_i] = .black;
+                    colors[grandparent_i] = .red;
+                },
+                // self.rotate(grandparent_i, right),
+            }
+        }
+    }
+}
+
+// fn rotate(self: *Self, grandparent_i: u32, right: bool) void {
+    // var colors = self.branches.items(.color);
+// }
 
 pub fn print(self: *const Self) void {
     printNode(self, self.root);
