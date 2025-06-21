@@ -11,13 +11,20 @@ const Self = @This();
 const NodeID = union(enum) {
     leaf: u32,
     branch: u32,
+
+    pub fn getBranch(self: NodeID) ?u32 {
+        return switch (self) {
+            .leaf => null,
+            .branch => |branch_i| branch_i,
+        };
+    }
 };
 
 const Branch = struct {
-    color: enum { black, red } = .black,
-    offset: u32,
-    parent: ?u32 = null,
     children: [2]NodeID = undefined, // left, right
+    parent: ?u32 = null,
+    offset: u32,
+    color: enum { black, red } = .black,
 };
 
 const Leaf = struct {
@@ -57,10 +64,15 @@ pub fn insert(self: *Self, offset: u32, value: u32) !void {
                 branch.children[@intFromBool(right)] = .{ .leaf = i };
                 branch.children[@intFromBool(!right)] = .{ .leaf = leaf_i };
 
-                try self.branches.append(self.alloc, branch);
-                const branch_i: NodeID = .{ .branch = @intCast(self.branches.len - 1) };
+                const branch_i: NodeID = .{ .branch = @intCast(self.branches.len) };
 
-                if (std.meta.eql(node_i, self.root)) self.root = branch_i;
+                if (std.meta.eql(node_i, self.root)) {
+                    self.root = branch_i;
+                    branch.color = .black;
+                }
+
+                try self.branches.append(self.alloc, branch);
+
                 if (parent) |parent_i| {
                     var parent_node = self.branches.get(parent_i);
                     parent_node.children[@intFromBool(right)] = branch_i;
@@ -76,10 +88,11 @@ pub fn insert(self: *Self, offset: u32, value: u32) !void {
 
 // Traverse up the tree and check colors/rebalance
 fn rebalance(self: *Self, branch_i: u32) void {
-    var colors = self.branches.items(.color);
+    var branches = self.branches.slice();
+    var colors = branches.items(.color);
     var color = colors[branch_i];
-    const parents = self.branches.items(.parent);
-    var childrens = self.branches.items(.children);
+    const parents = branches.items(.parent);
+    var childrens = branches.items(.children);
     var node_i = branch_i;
 
     while (parents[node_i]) |parent_i| : ({
@@ -118,6 +131,38 @@ fn rebalance(self: *Self, branch_i: u32) void {
     // var colors = self.branches.items(.color);
 // }
 
+pub const ValidationError = error {
+    RootIsRed,
+    AdjacentReds,
+    UnevenBlacks,
+};
+
+pub fn validate(self: *const Self) ValidationError!void {
+    if (self.root.getBranch()) |branch_i| {
+        const colors = self.branches.items(.color);
+        if (colors[branch_i] == .red) return error.RootIsRed;
+    } else return;
+
+    _ = try self.validate_node(self.root, false);
+}
+
+fn validate_node(self: *const Self, node_i: NodeID, red: bool) ValidationError!u32 {
+    switch (node_i) {
+        .leaf => return 0,
+        .branch => |branch_i| {
+            const branch = self.branches.get(branch_i);
+            const new_red = branch.color == .red;
+            if (red and new_red) return error.AdjacentReds;
+
+            const left_blacks = try self.validate_node(branch.children[0], new_red);
+            const right_blacks = try self.validate_node(branch.children[1], new_red);
+            if (left_blacks != right_blacks) return error.UnevenBlacks;
+
+            return left_blacks + @intFromBool(!new_red);
+        },
+    }
+}
+
 pub fn print(self: *const Self) void {
     printNode(self, self.root);
     std.debug.print("\n", .{});
@@ -141,6 +186,7 @@ fn printNode(self: *const Self, node_i: NodeID) void {
 }
 
 const expectEqual = std.testing.expectEqual;
+const expectError = std.testing.expectError;
 
 test "basic insert" {
     var tree: Self = .{
@@ -173,4 +219,59 @@ test "basic insert" {
     try expectEqual(1, parent_right.offset);
     try expectEqual(1, right_left.offset);
     try expectEqual(2, right_right.offset);
+}
+
+test "validate" {
+    const leaf: NodeID = .{ .leaf = 0 };
+    var tree: Self = .{
+        .alloc = std.testing.allocator,
+        .root = leaf,
+    };
+
+    // Create tree manually to avoid balancing
+    try tree.branches.append(tree.alloc, .{
+        .offset = 0,
+        .color = .black,
+        .children = .{ leaf, leaf },
+    });
+    try tree.branches.append(tree.alloc, .{
+        .offset = 1,
+        .color = .black,
+        .children = .{ leaf, .{ .branch = 2 } },
+    });
+    try tree.branches.append(tree.alloc, .{
+        .offset = 2,
+        .color = .red,
+        .children = .{ leaf, leaf },
+    });
+    try tree.leaves.append(tree.alloc, .{
+        .offset = 0,
+        .value = 0,
+    });
+    defer tree.deinit();
+
+    try tree.validate();
+
+    var branch = tree.branches.get(0);
+    branch.color = .red;
+    tree.branches.set(0, branch);
+    tree.root = .{ .branch = 0 };
+    try expectError(error.RootIsRed, tree.validate());
+
+    branch.color = .black;
+    tree.branches.set(0, branch);
+    try tree.validate();
+
+    tree.root = .{ .branch = 1 };
+    try tree.validate();
+
+    tree.root = .{ .branch = 0 };
+    branch.children[1] = .{ .branch = 1 };
+    tree.branches.set(0, branch);
+    try expectError(error.UnevenBlacks, tree.validate());
+
+    branch = tree.branches.get(1);
+    branch.color = .red;
+    tree.branches.set(1, branch);
+    try expectError(error.AdjacentReds, tree.validate());
 }
