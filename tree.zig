@@ -172,6 +172,34 @@ fn validate_node(self: *const Self, node_i: NodeID, red: bool) ValidationError!u
     }
 }
 
+// Even after I implement next indices on the leaves,
+// this function will be necessary for testing because
+// relying on my implementation would make the test
+// cases unreliable.
+//
+// Caller owns returned slice.
+pub fn inorder(self: *const Self, alloc: Allocator) ![]u32 {
+    var values: std.ArrayList(u32) = .init(alloc);
+
+    try self.inorderNode(self.root, &values);
+
+    return try values.toOwnedSlice();
+}
+
+fn inorderNode(self: *const Self, node_i: NodeID, values: *std.ArrayList(u32)) !void {
+    switch (node_i) {
+        .leaf => |leaf_i| {
+            const leaf_values = self.leaves.items(.value);
+            try values.append(leaf_values[leaf_i]);
+        },
+        .branch => |branch_i| {
+            const children = self.branches.items(.children)[branch_i];
+            try self.inorderNode(children[0], values);
+            try self.inorderNode(children[1], values);
+        },
+    }
+}
+
 pub fn print(self: *const Self) void {
     printNode(self, self.root);
     std.debug.print("\n", .{});
@@ -196,6 +224,7 @@ fn printNode(self: *const Self, node_i: NodeID) void {
 
 const expectEqual = std.testing.expectEqual;
 const expectError = std.testing.expectError;
+const expectEqualSlices = std.testing.expectEqualSlices;
 
 test "basic insert" {
     var tree: Self = .{
@@ -307,4 +336,49 @@ test "validate" {
     branch.color = .red;
     tree.branches.set(1, branch);
     try expectError(error.AdjacentReds, tree.validate());
+}
+
+test "inorder" {
+    var tree: Self = .{
+        .alloc = std.testing.allocator,
+        .root = .{ .branch = 0 },
+    };
+
+    // Create tree manually to avoid potential bugs in insertion code
+    try tree.branches.append(tree.alloc, .{
+        .offset = 0,
+        .color = .black,
+        .children = .{ .{ .branch = 1 }, .{ .branch = 2 } },
+    });
+    try tree.branches.append(tree.alloc, .{
+        .offset = 0,
+        .color = .red,
+        .children = .{ .{ .leaf = 0 }, .{ .leaf = 1 } },
+    });
+    try tree.branches.append(tree.alloc, .{
+        .offset = 0,
+        .color = .red,
+        .children = .{ .{ .leaf = 2 }, .{ .leaf = 3 } },
+    });
+    try tree.leaves.append(tree.alloc, .{
+        .offset = 0,
+        .value = 1,
+    });
+    try tree.leaves.append(tree.alloc, .{
+        .offset = 0,
+        .value = 2,
+    });
+    try tree.leaves.append(tree.alloc, .{
+        .offset = 0,
+        .value = 3,
+    });
+    try tree.leaves.append(tree.alloc, .{
+        .offset = 0,
+        .value = 4,
+    });
+    defer tree.deinit();
+
+    const values = try tree.inorder(std.testing.allocator);
+    defer std.testing.allocator.free(values);
+    try expectEqualSlices(u32, &.{ 1, 2, 3, 4 }, @ptrCast(values));
 }
