@@ -273,12 +273,21 @@ test "insertion with rotation" {
 
     try tree.insert(2, 1);
     try tree.validate();
+    var values = try tree.inorder(std.testing.allocator);
+    try expectEqualSlices(u32, &.{ 0, 1 }, values);
+    std.testing.allocator.free(values);
 
     try tree.insert(3, 2);
     try tree.validate();
+    values = try tree.inorder(std.testing.allocator);
+    try expectEqualSlices(u32, &.{ 0, 1, 2 }, values);
+    std.testing.allocator.free(values);
 
     try tree.insert(4, 3);
     try tree.validate();
+    values = try tree.inorder(std.testing.allocator);
+    try expectEqualSlices(u32, &.{ 0, 1, 2, 3 }, values);
+    std.testing.allocator.free(values);
 }
 
 // TODO: Fuzz testing?
