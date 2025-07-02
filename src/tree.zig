@@ -1,6 +1,6 @@
 // TODO:
 // - Finish writing tests
-// - Change leaf to have slices and finalize API
+// - Finalize API
 // - Add next field in leaf struct to support iteration
 // - Embed in larger buffer struct and remove alloc field
 // - Benchmark?
@@ -35,55 +35,68 @@ const Branch = struct {
 };
 
 const Leaf = struct {
+    str: []const u8, // TODO: Replace with usize ptr and u32 len fields?
+    next: ?u32 = null,
     offset: u32,
-    value: u32, // Placeholder
 };
+
+pub fn init(str: []const u8, alloc: Allocator) !Self {
+    var self: Self = .{
+        .root = .{ .leaf = 0 },
+        .alloc = alloc,
+    };
+
+    try self.leaves.append(alloc, .{
+        .offset = 0,
+        .str = str,
+    });
+
+    return self;
+}
 
 pub fn deinit(self: *Self) void {
     self.branches.deinit(self.alloc);
     self.leaves.deinit(self.alloc);
 }
 
-pub fn insert(self: *Self, offset: u32, value: u32) !void {
-    try self.leaves.append(self.alloc, .{ .offset = offset, .value = value });
-    const i: u32 = @intCast(self.leaves.len - 1);
+fn addLeaf(self: *Self, leaf: Leaf) !NodeID {
+    const node_i: NodeID = .{ .leaf = @intCast(self.leaves.len) };
+    try self.leaves.append(self.alloc, leaf);
+    return node_i;
+}
 
+fn addBranch(self: *Self, branch: Branch) !NodeID {
+    const node_i: NodeID = .{ .branch = @intCast(self.leaves.len) };
+    try self.leaves.append(self.alloc, branch);
+    return node_i;
+}
+
+pub fn insert(self: *Self, offset: u32, str: []const u8) !void {
     var node_i = self.root;
-    const offsets = self.leaves.items(.offset);
+    const branches = self.branches.slice();
+    var colors = branches.items(.color);
     var parent: ?u32 = null;
     var right: bool = undefined;
     while (true) {
         switch (node_i) {
             .branch => |branch_i| {
-                const branch = self.branches.get(branch_i);
+                const branch = branches.get(branch_i);
                 parent = branch_i;
                 right = offset >= branch.offset;
                 node_i = branch.children[@intFromBool(right)];
             },
             .leaf => |leaf_i| {
-                const leaf_offset = offsets[leaf_i];
-                right = offset >= leaf_offset;
-                var branch: Branch = .{
-                    .color = .red,
-                    .offset = if (right) leaf_offset else offset,
-                    .parent = parent,
-                };
-                branch.children[@intFromBool(right)] = .{ .leaf = i };
-                branch.children[@intFromBool(!right)] = .{ .leaf = leaf_i };
-
-                const branch_i: NodeID = .{ .branch = @intCast(self.branches.len) };
+                const branch_i = try self.insertLeaf(leaf_i, parent, offset, str);
 
                 if (std.meta.eql(node_i, self.root)) {
                     self.root = branch_i;
-                    branch.color = .black;
+                    colors[branch_i] = .black;
                 }
 
-                try self.branches.append(self.alloc, branch);
-
                 if (parent) |parent_i| {
-                    var parent_node = self.branches.get(parent_i);
+                    var parent_node = branches.get(parent_i);
                     parent_node.children[@intFromBool(right)] = branch_i;
-                    self.branches.set(parent_i, parent_node);
+                    branches.set(parent_i, parent_node);
                 }
 
                 self.rebalance(branch_i.branch);
@@ -91,6 +104,68 @@ pub fn insert(self: *Self, offset: u32, value: u32) !void {
             },
         }
     }
+}
+
+fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const u8) !NodeID {
+    var branch_i: NodeID = undefined;
+    var leaf = self.leaves.get(leaf_i);
+
+    if (offset + str.len < leaf.offset or offset > leaf.offset + leaf.str.len) {
+        return error.OutOfBounds;
+    }
+
+    // Insert new leaf
+    const new_leaf_i = try self.addLeaf(.{ .offset = offset, .str = str });
+
+    const at_start = offset == leaf.offset;
+    if (at_start or offset == leaf.offset + leaf.str.len) {
+        // Single branch and with existing and new leaf as children
+        if (at_start) {
+            leaf.offset += str.len;
+            self.leaves.set(leaf_i, leaf);
+        }
+
+        var branch: Branch = .{
+            .color = .red,
+            .offset = if (at_start) offset + str.len else leaf.offset + leaf.str.len,
+            .parent = parent,
+        };
+        branch.children[@intFromBool(at_start)] = .{ .leaf = leaf_i };
+        branch.children[@intFromBool(!at_start)] = new_leaf_i;
+
+        branch_i = try self.addBranch(branch);
+    } else {
+        // Nested branches with two existing leaves and new leaf
+
+        // New leaf, left half of original
+        const split_i = offset - leaf.offset;
+        const leaf_start_i = try self.addLeaf(.{
+            .str = leaf.str[0..split_i],
+            .offset = leaf.offset,
+        });
+
+        // Original leaf, update to be right half
+        leaf.str = leaf.str[split_i..];
+        leaf.offset += split_i + str.len;
+        self.leaves.set(leaf_i, leaf);
+
+        const child_branch_i = self.addBranch(.{
+            .color = .red, // We want this to be rebalanced // TODO: Just recolor manually?
+            .offset = offset + str.len,
+            .parent = self.branches.len + 1,
+            .children = .{ new_leaf_i, .{ .leaf = leaf_i } },
+        });
+
+        // TODO: Direction? Do I care? Does balancing still work?
+        branch_i = try self.addBranch(.{
+            .color = .red,
+            .offset = offset,
+            .parent = parent,
+            .children = .{ leaf_start_i, child_branch_i },
+        });
+    }
+
+    return branch_i;
 }
 
 // Traverse up the tree and check colors/rebalance
@@ -113,7 +188,7 @@ fn rebalance(self: *Self, branch_i: u32) void {
             // Have to use eql here because the child could be a leaf
             const right = std.meta.eql(children[1], .{ .branch = parent_i });
             const right_i = @intFromBool(right);
-            const left_i = 1 - right_i;
+            const left_i = @intFromBool(!right);
             const uncle_i = children[left_i];
 
             switch (uncle_i) {
