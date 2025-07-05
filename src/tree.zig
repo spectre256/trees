@@ -37,7 +37,6 @@ const Branch = struct {
 const Leaf = struct {
     str: []const u8, // TODO: Replace with usize ptr and u32 len fields?
     next: ?u32 = null,
-    offset: u32,
 };
 
 pub fn init(str: []const u8, alloc: Allocator) !Self {
@@ -46,10 +45,7 @@ pub fn init(str: []const u8, alloc: Allocator) !Self {
         .alloc = alloc,
     };
 
-    try self.leaves.append(alloc, .{
-        .offset = 0,
-        .str = str,
-    });
+    try self.leaves.append(alloc, .{ .str = str });
 
     return self;
 }
@@ -59,44 +55,56 @@ pub fn deinit(self: *Self) void {
     self.leaves.deinit(self.alloc);
 }
 
-fn addLeaf(self: *Self, leaf: Leaf) !NodeID {
+inline fn addLeaf(self: *Self, leaf: Leaf) !NodeID {
     const node_i: NodeID = .{ .leaf = @intCast(self.leaves.len) };
     try self.leaves.append(self.alloc, leaf);
     return node_i;
 }
 
-fn addBranch(self: *Self, branch: Branch) !NodeID {
-    const node_i: NodeID = .{ .branch = @intCast(self.leaves.len) };
-    try self.leaves.append(self.alloc, branch);
+inline fn addBranch(self: *Self, branch: Branch) !NodeID {
+    const node_i: NodeID = .{ .branch = @intCast(self.branches.len) };
+    try self.branches.append(self.alloc, branch);
     return node_i;
 }
 
+// TODO: Make this function (and the ones it calls) atomic? i.e. it either works or doesn't change tree
 pub fn insert(self: *Self, offset: u32, str: []const u8) !void {
     var node_i = self.root;
-    const branches = self.branches.slice();
-    var colors = branches.items(.color);
+    var branches = self.branches.slice();
+    var offsets = branches.items(.offset);
+    // The length of everything to the left of the current node
+    var relative_offset = offset;
     var parent: ?u32 = null;
     var right: bool = undefined;
+
     while (true) {
         switch (node_i) {
             .branch => |branch_i| {
                 const branch = branches.get(branch_i);
                 parent = branch_i;
-                right = offset >= branch.offset;
+                right = relative_offset >= branch.offset;
                 node_i = branch.children[@intFromBool(right)];
+                if (right) {
+                    // Update to maintain relativity
+                    relative_offset -= branch.offset;
+                } else {
+                    // Relative offset of branch increases since we insert left
+                    offsets[branch_i] += @intCast(str.len);
+                }
             },
             .leaf => |leaf_i| {
-                const branch_i = try self.insertLeaf(leaf_i, parent, offset, str);
+                const branch_i = try self.insertLeaf(leaf_i, parent, relative_offset, str);
 
                 if (std.meta.eql(node_i, self.root)) {
                     self.root = branch_i;
-                    colors[branch_i] = .black;
+                    var colors = self.branches.items(.color);
+                    colors[branch_i.branch] = .black;
                 }
 
                 if (parent) |parent_i| {
-                    var parent_node = branches.get(parent_i);
-                    parent_node.children[@intFromBool(right)] = branch_i;
-                    branches.set(parent_i, parent_node);
+                    var childrens = self.branches.items(.children);
+                    // right only gets used iff there is a parent, which guarantees that it's defined
+                    childrens[parent_i][@intFromBool(right)] = branch_i;
                 }
 
                 self.rebalance(branch_i.branch);
@@ -109,25 +117,21 @@ pub fn insert(self: *Self, offset: u32, str: []const u8) !void {
 fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const u8) !NodeID {
     var branch_i: NodeID = undefined;
     var leaf = self.leaves.get(leaf_i);
+    const str_len: u32 = @intCast(str.len);
 
-    if (offset + str.len < leaf.offset or offset > leaf.offset + leaf.str.len) {
+    if (offset > @as(u32, @intCast(leaf.str.len))) {
         return error.OutOfBounds;
     }
 
     // Insert new leaf
-    const new_leaf_i = try self.addLeaf(.{ .offset = offset, .str = str });
+    const new_leaf_i = try self.addLeaf(.{ .str = str });
 
-    const at_start = offset == leaf.offset;
-    if (at_start or offset == leaf.offset + leaf.str.len) {
+    const at_start = offset == 0;
+    if (at_start or offset == leaf.str.len) {
         // Single branch and with existing and new leaf as children
-        if (at_start) {
-            leaf.offset += str.len;
-            self.leaves.set(leaf_i, leaf);
-        }
-
         var branch: Branch = .{
             .color = .red,
-            .offset = if (at_start) offset + str.len else leaf.offset + leaf.str.len,
+            .offset = if (at_start) str_len else @intCast(leaf.str.len),
             .parent = parent,
         };
         branch.children[@intFromBool(at_start)] = .{ .leaf = leaf_i };
@@ -138,21 +142,18 @@ fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const 
         // Nested branches with two existing leaves and new leaf
 
         // New leaf, left half of original
-        const split_i = offset - leaf.offset;
         const leaf_start_i = try self.addLeaf(.{
-            .str = leaf.str[0..split_i],
-            .offset = leaf.offset,
+            .str = leaf.str[0..offset],
         });
 
         // Original leaf, update to be right half
-        leaf.str = leaf.str[split_i..];
-        leaf.offset += split_i + str.len;
+        leaf.str = leaf.str[offset..];
         self.leaves.set(leaf_i, leaf);
 
-        const child_branch_i = self.addBranch(.{
+        const child_branch_i = try self.addBranch(.{
             .color = .red, // We want this to be rebalanced // TODO: Just recolor manually?
-            .offset = offset + str.len,
-            .parent = self.branches.len + 1,
+            .offset = str_len,
+            .parent = @as(u32, @intCast(self.branches.len)) + 1,
             .children = .{ new_leaf_i, .{ .leaf = leaf_i } },
         });
 
@@ -172,6 +173,7 @@ fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const 
 fn rebalance(self: *Self, branch_i: u32) void {
     var branches = self.branches.slice();
     var colors = branches.items(.color);
+    var offsets = branches.items(.offset);
     var color = colors[branch_i];
     var parents = branches.items(.parent);
     var childrens = branches.items(.children);
@@ -196,11 +198,14 @@ fn rebalance(self: *Self, branch_i: u32) void {
                     colors[parent_i] = .black;
                     colors[uncle_branch_i] = .black;
                 },
-                .leaf => { // Rotate
+                .leaf => |uncle_leaf_i| { // Rotate
                     childrens[grandparent_i][right_i] = childrens[parent_i][left_i];
                     childrens[parent_i][left_i] = .{ .branch = grandparent_i };
                     parents[parent_i] = parents[grandparent_i];
                     parents[grandparent_i] = parent_i;
+
+                    const uncle = self.leaves.get(uncle_leaf_i);
+                    offsets[parent_i] += @intCast(uncle.str.len);
 
                     colors[parent_i] = .black;
                     colors[grandparent_i] = .red;
@@ -253,19 +258,19 @@ fn validate_node(self: *const Self, node_i: NodeID, red: bool) ValidationError!u
 // cases unreliable.
 //
 // Caller owns returned slice.
-pub fn inorder(self: *const Self, alloc: Allocator) ![]u32 {
-    var values: std.ArrayList(u32) = .init(alloc);
+pub fn inorder(self: *const Self, alloc: Allocator) ![][]const u8 {
+    var values: std.ArrayList([]const u8) = .init(alloc);
 
     try self.inorderNode(self.root, &values);
 
     return try values.toOwnedSlice();
 }
 
-fn inorderNode(self: *const Self, node_i: NodeID, values: *std.ArrayList(u32)) !void {
+fn inorderNode(self: *const Self, node_i: NodeID, values: *std.ArrayList([]const u8)) !void {
     switch (node_i) {
         .leaf => |leaf_i| {
-            const leaf_values = self.leaves.items(.value);
-            try values.append(leaf_values[leaf_i]);
+            const leaf_strs = self.leaves.items(.str);
+            try values.append(leaf_strs[leaf_i]);
         },
         .branch => |branch_i| {
             const children = self.branches.items(.children)[branch_i];
@@ -284,85 +289,90 @@ fn printNode(self: *const Self, node_i: NodeID) void {
     switch (node_i) {
         .leaf => |leaf_i| {
             const node = self.leaves.get(leaf_i);
-            std.debug.print("({d}: {d})", .{ node.offset, node.value });
+            std.debug.print("\"{s}\"", .{node.str});
         },
         .branch => |branch_i| {
             const node = self.branches.get(branch_i);
-            std.debug.print("({c}{d}, ", .{ @as(u8, if (node.color == .black) 'b' else 'r'), node.offset });
+            std.debug.print("({c}{d} ", .{ @as(u8, if (node.color == .black) 'b' else 'r'), node.offset });
             printNode(self, node.children[0]);
-            std.debug.print(", ", .{});
+            std.debug.print(" ", .{});
             printNode(self, node.children[1]);
             std.debug.print(")", .{});
         },
     }
 }
 
-const expectEqual = std.testing.expectEqual;
-const expectError = std.testing.expectError;
-const expectEqualSlices = std.testing.expectEqualSlices;
+const testing = std.testing;
+const expectEqual = testing.expectEqual;
+const expectError = testing.expectError;
+const expectEqualSlices = testing.expectEqualSlices;
+
+fn expectInorder(self: *const Self, expected: []const []const u8) !void {
+    const actual = try self.inorder(testing.allocator);
+    try expectEqual(expected.len, actual.len);
+    for (0..actual.len) |i| {
+        try expectEqualSlices(u8, expected[i], actual[i]);
+    }
+    testing.allocator.free(actual);
+}
 
 test "basic insert" {
-    var tree: Self = .{
-        .alloc = std.testing.allocator,
-        .root = .{ .leaf = 0 },
-    };
-    try tree.leaves.append(tree.alloc, .{
-        .offset = 1,
-        .value = 0,
-    });
+    var tree: Self = try .init("0", testing.allocator);
     defer tree.deinit();
 
-    try tree.insert(0, 1);
+    try tree.insert(0, "1");
+    try tree.validate();
     var parent = tree.branches.get(tree.root.branch);
-    var left = tree.leaves.get(parent.children[0].leaf);
-    const right = tree.leaves.get(parent.children[1].leaf);
-    try expectEqual(0, parent.offset);
-    try expectEqual(0, left.offset);
-    try expectEqual(1, right.offset);
+    try expectEqual(1, parent.offset);
 
-    try tree.insert(2, 2);
+    try tree.insert(2, "2");
+    try tree.validate();
     parent = tree.branches.get(tree.root.branch);
-    left = tree.leaves.get(parent.children[0].leaf);
     const parent_right = tree.branches.get(parent.children[1].branch);
-    const right_left = tree.leaves.get(parent_right.children[0].leaf);
-    const right_right = tree.leaves.get(parent_right.children[1].leaf);
 
-    try expectEqual(0, parent.offset);
-    try expectEqual(0, left.offset);
+    try expectEqual(1, parent.offset);
     try expectEqual(1, parent_right.offset);
-    try expectEqual(1, right_left.offset);
-    try expectEqual(2, right_right.offset);
+
+    try tree.expectInorder(&.{ "1", "0", "2" });
 }
 
 // TODO: Insert left, multiple rotation?
 test "insertion with rotation" {
-    var tree: Self = .{
-        .alloc = std.testing.allocator,
-        .root = .{ .leaf = 0 },
-    };
-    try tree.leaves.append(tree.alloc, .{
-        .offset = 1,
-        .value = 0,
-    });
+    var tree: Self = try .init("0", testing.allocator);
     defer tree.deinit();
 
-    try tree.insert(2, 1);
+    try tree.insert(1, "1");
     try tree.validate();
-    var values = try tree.inorder(std.testing.allocator);
-    try expectEqualSlices(u32, &.{ 0, 1 }, values);
-    std.testing.allocator.free(values);
+    try tree.expectInorder(&.{ "0", "1" });
 
-    try tree.insert(3, 2);
+    try tree.insert(2, "2");
     try tree.validate();
-    values = try tree.inorder(std.testing.allocator);
-    try expectEqualSlices(u32, &.{ 0, 1, 2 }, values);
-    std.testing.allocator.free(values);
+    try tree.expectInorder(&.{ "0", "1", "2" });
 
-    try tree.insert(4, 3);
+    try tree.insert(3, "3");
     try tree.validate();
-    values = try tree.inorder(std.testing.allocator);
-    try expectEqualSlices(u32, &.{ 0, 1, 2, 3 }, values);
-    std.testing.allocator.free(values);
+    try tree.expectInorder(&.{ "0", "1", "2", "3" });
+}
+
+test "insertion in middle of string" {
+    var tree: Self = try .init("Hello world", testing.allocator);
+    defer tree.deinit();
+
+    tree.print();
+    try tree.insert(5, ",");
+    tree.print();
+    try tree.validate();
+    try tree.expectInorder(&.{ "Hello", ",", " world" });
+
+    try tree.insert(12, "!!");
+    tree.print();
+    try tree.validate();
+    try tree.expectInorder(&.{ "Hello", ",", " world", "!!" });
+
+    try tree.insert(2, "llo he");
+    tree.print();
+    try tree.validate();
+    try tree.expectInorder(&.{ "He", "llo he", "llo", ",", " world", "!!" });
 }
 
 // TODO: Fuzz testing?
@@ -370,7 +380,7 @@ test "insertion with rotation" {
 test "validate" {
     const leaf: NodeID = .{ .leaf = 0 };
     var tree: Self = .{
-        .alloc = std.testing.allocator,
+        .alloc = testing.allocator,
         .root = leaf,
     };
 
@@ -390,10 +400,7 @@ test "validate" {
         .color = .red,
         .children = .{ leaf, leaf },
     });
-    try tree.leaves.append(tree.alloc, .{
-        .offset = 0,
-        .value = 0,
-    });
+    try tree.leaves.append(tree.alloc, .{ .str = "" });
     defer tree.deinit();
 
     try tree.validate();
@@ -424,7 +431,7 @@ test "validate" {
 
 test "inorder" {
     var tree: Self = .{
-        .alloc = std.testing.allocator,
+        .alloc = testing.allocator,
         .root = .{ .branch = 0 },
     };
 
@@ -445,24 +452,18 @@ test "inorder" {
         .children = .{ .{ .leaf = 2 }, .{ .leaf = 3 } },
     });
     try tree.leaves.append(tree.alloc, .{
-        .offset = 0,
-        .value = 1,
+        .str = "1",
     });
     try tree.leaves.append(tree.alloc, .{
-        .offset = 0,
-        .value = 2,
+        .str = "2",
     });
     try tree.leaves.append(tree.alloc, .{
-        .offset = 0,
-        .value = 3,
+        .str = "3",
     });
     try tree.leaves.append(tree.alloc, .{
-        .offset = 0,
-        .value = 4,
+        .str = "4",
     });
     defer tree.deinit();
 
-    const values = try tree.inorder(std.testing.allocator);
-    defer std.testing.allocator.free(values);
-    try expectEqualSlices(u32, &.{ 1, 2, 3, 4 }, @ptrCast(values));
+    try tree.expectInorder(&.{ "1", "2", "3", "4" });
 }
