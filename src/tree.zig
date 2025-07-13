@@ -93,20 +93,9 @@ pub fn insert(self: *Self, offset: u32, str: []const u8) !void {
                 }
             },
             .leaf => |leaf_i| {
-                const branch_i = try self.insertLeaf(leaf_i, parent, relative_offset, str);
+                const branch_i = try self.insertLeaf(leaf_i, parent, right, relative_offset, str);
 
-                if (std.meta.eql(node_i, self.root)) {
-                    self.root = branch_i;
-                    var colors = self.branches.items(.color);
-                    colors[branch_i.branch] = .black;
-                }
-
-                if (parent) |parent_i| {
-                    var childrens = self.branches.items(.children);
-                    // right only gets used iff there is a parent, which guarantees that it's defined
-                    childrens[parent_i][@intFromBool(right)] = branch_i;
-                }
-
+                self.reparent(node_i, branch_i, parent, right);
                 self.rebalance(branch_i.branch);
                 break;
             },
@@ -114,7 +103,7 @@ pub fn insert(self: *Self, offset: u32, str: []const u8) !void {
     }
 }
 
-fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const u8) !NodeID {
+fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, right: bool, offset: u32, str: []const u8) !NodeID {
     var branch_i: NodeID = undefined;
     var leaf = self.leaves.get(leaf_i);
     const str_len: u32 = @intCast(str.len);
@@ -125,6 +114,7 @@ fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const 
 
     // Insert new leaf
     const new_leaf_i = try self.addLeaf(.{ .str = str });
+    const old_leaf_i: NodeID = .{ .leaf = leaf_i };
 
     const at_start = offset == 0;
     if (at_start or offset == leaf.str.len) {
@@ -150,23 +140,49 @@ fn insertLeaf(self: *Self, leaf_i: u32, parent: ?u32, offset: u32, str: []const 
         leaf.str = leaf.str[offset..];
         self.leaves.set(leaf_i, leaf);
 
-        const child_branch_i = try self.addBranch(.{
-            .color = .red, // We want this to be rebalanced // TODO: Just recolor manually?
-            .offset = str_len,
-            .parent = @as(u32, @intCast(self.branches.len)) + 1,
-            .children = .{ new_leaf_i, .{ .leaf = leaf_i } },
-        });
-
         // TODO: Direction? Do I care? Does balancing still work?
-        branch_i = try self.addBranch(.{
+        const parent_branch_i = try self.addBranch(.{
             .color = .red,
             .offset = offset,
             .parent = parent,
-            .children = .{ leaf_start_i, child_branch_i },
+            .children = .{ leaf_start_i, new_leaf_i },
         });
+
+        // Rebalance first new node
+        self.reparent(old_leaf_i, parent_branch_i, parent, right);
+        self.rebalance(parent_branch_i.branch);
+        self.print();
+
+        branch_i = try self.addBranch(.{
+            .color = .red,
+            .offset = str_len,
+            // .parent = @as(u32, @intCast(self.branches.len)) + 1,
+            .parent = parent_branch_i.branch,
+            .children = .{ new_leaf_i, old_leaf_i },
+        });
+
+        // Update right child to second new node
+        var children = self.branches.items(.children);
+        children[parent_branch_i.branch][1] = branch_i;
     }
 
     return branch_i;
+}
+
+fn reparent(self: *Self, original_i: NodeID, new_i: NodeID, parent: ?u32, right: bool) void {
+    if (std.meta.eql(original_i, self.root)) {
+        self.root = new_i;
+
+        if (new_i.getBranch()) |branch_i| {
+            var colors = self.branches.items(.color);
+            colors[branch_i] = .black;
+        }
+    } else if (parent) |parent_i| {
+        var childrens = self.branches.items(.children);
+        // right only gets used iff there is a parent, which guarantees that it's defined
+        // parent *should* be defined here when the original node is not the root
+        childrens[parent_i][@intFromBool(right)] = new_i;
+    }
 }
 
 // Traverse up the tree and check colors/rebalance
