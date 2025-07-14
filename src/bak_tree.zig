@@ -7,122 +7,96 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const MemoryPool = std.heap.MemoryPool;
 
-root: *Node,
-nodes: MemoryPool(Node),
+root: NodeID,
+branches: std.MultiArrayList(Branch) = .empty,
+leaves: std.MultiArrayList(Leaf) = .empty,
+alloc: Allocator,
 
 const Self = @This();
 
-const Node = union(enum) {
-    leaf: Leaf,
-    branch: Branch,
+const NodeID = union(enum) {
+    leaf: u32,
+    branch: u32,
 
-    pub fn getBranch(self: *Node) ?*Branch {
-        return switch (self.*) {
+    pub fn getBranch(self: NodeID) ?u32 {
+        return switch (self) {
             .leaf => null,
-            .branch => |*branch| branch,
+            .branch => |branch_i| branch_i,
         };
     }
 };
 
 const Branch = struct {
-    children: [2]*Node = undefined, // left, right
-    parent: ?*Branch = null,
-    offset: usize,
+    children: [2]NodeID = undefined, // left, right
+    parent: ?u32 = null,
+    offset: u32,
     color: enum { black, red } = .black,
-
-    pub fn recolor(self: *@This()) bool {
-        const left = self.children[0].getBranch() orelse return false;
-        const right = self.children[1].getBranch() orelse return false;
-
-        if (self.color == .black and left.color == .red and right.color == .red) {
-            self.color = .red;
-            left.color = .black;
-            right.color = .black;
-            return true;
-        }
-
-        return false;
-    }
-
-    pub fn rotate(self: *@This()) void {
-        const parent = self.parent orelse return;
-        if (self.color != .red or parent.color != .red) return;
-
-        const grandparent = parent.parent orelse return;
-        const right = parent.children[1] == self;
-        const parent_right = grandparent.children[1] == parent;
-
-
-        if (right != parent_right) {
-            // Double rotate
-        }
-
-
-    }
 };
 
 const Leaf = struct {
-    str: []const u8,
-    next: ?*Node = null,
+    str: []const u8, // TODO: Replace with usize ptr and u32 len fields?
+    next: ?u32 = null,
 };
 
-pub fn init(alloc: Allocator, str: []const u8) !Self {
+pub fn init(str: []const u8, alloc: Allocator) !Self {
     var self: Self = .{
-        .root = undefined,
-        .nodes = .init(alloc),
+        .root = .{ .leaf = 0 },
+        .alloc = alloc,
     };
 
-    self.root = try self.addLeaf(.{ .str = str });
+    try self.leaves.append(alloc, .{ .str = str });
 
     return self;
 }
 
 pub fn deinit(self: *Self) void {
-    self.nodes.deinit();
+    self.branches.deinit(self.alloc);
+    self.leaves.deinit(self.alloc);
 }
 
-inline fn addLeaf(self: *Self, leaf: Leaf) !*Node {
-    const leaf_ptr = try self.nodes.create();
-    leaf_ptr.leaf = leaf;
-    return leaf_ptr;
+inline fn addLeaf(self: *Self, leaf: Leaf) !NodeID {
+    const node_i: NodeID = .{ .leaf = @intCast(self.leaves.len) };
+    try self.leaves.append(self.alloc, leaf);
+    return node_i;
 }
 
-inline fn addBranch(self: *Self, branch: Branch) !*Node {
-    const branch_ptr = try self.nodes.create();
-    branch_ptr.branch = branch;
-    return branch_ptr;
+inline fn addBranch(self: *Self, branch: Branch) !NodeID {
+    const node_i: NodeID = .{ .branch = @intCast(self.branches.len) };
+    try self.branches.append(self.alloc, branch);
+    return node_i;
 }
 
 // TODO: Make this function (and the ones it calls) atomic? i.e. it either works or doesn't change tree
 pub fn insert(self: *Self, offset: u32, str: []const u8) !void {
+    var node_i = self.root;
+    var branches = self.branches.slice();
+    var offsets = branches.items(.offset);
     // The length of everything to the left of the current node
     var relative_offset = offset;
-    var parent: ?*Branch = null;
-    var node = self.root;
-    var right: ?bool = null;
+    var parent: ?u32 = null;
+    var right: bool = undefined;
 
     while (true) {
-        switch (node.*) {
-            .branch => |*branch| {
-                parent = branch;
+        switch (node_i) {
+            .branch => |branch_i| {
+                const branch = branches.get(branch_i);
+                parent = branch_i;
                 right = relative_offset >= branch.offset;
-                node = branch.children[@intFromBool(right)];
-
+                node_i = branch.children[@intFromBool(right)];
                 if (right) {
                     // Update to maintain relativity
                     relative_offset -= branch.offset;
                 } else {
                     // Relative offset of branch increases since we insert left
-                    branch.offset += str.len;
+                    offsets[branch_i] += @intCast(str.len);
                 }
             },
             .leaf => |leaf_i| {
-                const branch = try self.insertLeaf(leaf_i, parent, right, relative_offset, str);
+                const branch_i = try self.insertLeaf(leaf_i, parent, right, relative_offset, str);
 
-                self.reparent(node, branch, parent, right);
-                self.rebalance(branch);
+                self.reparent(node_i, branch_i, parent, right);
+                self.rebalance(branch_i.branch);
                 break;
             },
         }
@@ -212,25 +186,32 @@ fn reparent(self: *Self, original_i: NodeID, new_i: NodeID, parent: ?u32, right:
 }
 
 // Traverse up the tree and check colors/rebalance
-fn rebalance(self: *Self, branch: *Branch) void {
-    var color = branch.color;
-    var node = branch;
+fn rebalance(self: *Self, branch_i: u32) void {
+    var branches = self.branches.slice();
+    var colors = branches.items(.color);
+    var offsets = branches.items(.offset);
+    var color = colors[branch_i];
+    var parents = branches.items(.parent);
+    var childrens = branches.items(.children);
+    var node_i = branch_i;
 
-    while (node.parent) |parent| : ({
-        node = parent;
-        color = parent.color;
+    while (parents[node_i]) |parent_i| : ({
+        node_i = parent_i;
+        color = colors[parent_i];
     }) {
-        if (color == .red and parent.color == .red) {
+        if (color == .red and colors[parent_i] == .red) {
             // Check uncle and switch colors, rebalance as necessary
-            const grandparent = parent.parent orelse continue;
-            const right = grandparent.children[1] == parent;
+            const grandparent_i = parents[parent_i] orelse continue;
+            const children = childrens[grandparent_i];
+            // Have to use eql here because the child could be a leaf
+            const right = std.meta.eql(children[1], .{ .branch = parent_i });
             const right_i = @intFromBool(right);
             const left_i = @intFromBool(!right);
-            const uncle = grandparent.children[left_i];
+            const uncle_i = children[left_i];
 
             const single = right == std.meta.eql(childrens[parent_i][1], node_i);
 
-            switch (uncle) {
+            switch (uncle_i) {
                 .branch => |uncle_branch_i| { // Recolor
                     colors[parent_i] = .black;
                     colors[uncle_branch_i] = .black;
