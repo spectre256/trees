@@ -41,7 +41,7 @@ const Node = struct {
         self.parent = parent.parent;
         parent.parent = self;
 
-        parent.offset -= self.offset + self.str.len;
+        parent.offset += self.offset + self.str.len;
     }
 
     fn rotateZigZig(self: *Node, parent: *Node, grandparent: *Node, left_i: usize, right_i: usize) void {
@@ -105,16 +105,23 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
     var right: bool = undefined;
 
     while (true) {
-        parent = node;
-        right = relative_offset >= node.offset;
-        std.debug.print("str: \"{s}\", offset: {d}, going {s}\n", .{ node.str, node.offset, if (right) "right" else "left" });
-        node = node.children[@intFromBool(right)] orelse break;
+        if (relative_offset > node.offset and relative_offset < node.offset + node.str.len) {
+            relative_offset -= node.offset;
+            break;
+        }
 
+        right = relative_offset >= node.offset + node.str.len;
         if (right) {
             relative_offset -= node.offset + node.str.len;
         } else {
             node.offset += str.len;
         }
+
+        std.debug.print("str: \"{s}\", offset: {d}, relative: {d}, going {s}\n", .{ node.str, node.offset, relative_offset, if (right) "right" else "left" });
+
+        const tmp = node;
+        node = node.children[@intFromBool(right)] orelse break;
+        parent = tmp;
     }
 
     const new_node = try self.insertStr(node, parent, relative_offset, str);
@@ -186,10 +193,30 @@ pub fn print(self: *const Self) void {
 
 fn printNode(self: *const Self, maybe_node: ?*Node) void {
     if (maybe_node) |node| {
-        std.debug.print(" ({d} \"{s}\"", .{ node.offset, node.str });
+        std.debug.print("({d} \"{s}\" ", .{ node.offset, node.str });
         self.printNode(node.children[0]);
+        std.debug.print(" ", .{});
         self.printNode(node.children[1]);
         std.debug.print(")", .{});
+    } else {
+        std.debug.print("()", .{});
+    }
+}
+
+pub fn testOffsets(self: *const Self, length: usize) !void {
+    try expectEqual(length, try self.testOffset(self.root, length));
+}
+
+fn testOffset(self: *const Self, maybe_node: ?*const Node, length: usize) !usize {
+    if (maybe_node) |node| {
+        const left_length = try self.testOffset(node.children[0], node.offset);
+        const right_length = try self.testOffset(node.children[1], length - node.offset - node.str.len);
+        const actual_length = left_length + node.str.len + right_length;
+        try expectEqual(length, actual_length);
+        return actual_length;
+    } else {
+        try expectEqual(length, 0);
+        return 0;
     }
 }
 
@@ -205,6 +232,36 @@ fn expectInorder(self: *const Self, expected: []const []const u8) !void {
         try expectEqualSlices(u8, expected[i], actual[i]);
     }
     testing.allocator.free(actual);
+}
+
+test "splay" {
+    var rope: Self = try .init(testing.allocator, "22");
+    defer rope.deinit();
+
+    const left = try rope.addNode(.{
+        .parent = rope.root,
+        .offset = 0,
+        .str = "1",
+    });
+
+    const right = try rope.addNode(.{
+        .parent = rope.root,
+        .offset = 0,
+        .str = "333",
+    });
+
+    rope.root.offset = 1;
+    rope.root.children = .{ left, right };
+
+    try rope.expectInorder(&.{ "1", "22", "333" });
+    rope.print();
+    try rope.testOffsets(6);
+
+    rope.root.children[1].?.splay();
+    rope.print();
+
+    try rope.expectInorder(&.{ "1", "22", "333" });
+    try rope.testOffsets(6);
 }
 
 test "basic insertion" {
