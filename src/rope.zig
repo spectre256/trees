@@ -15,63 +15,35 @@ const Node = struct {
 
     pub fn splay(self: *Node) void {
         while (true) {
-            const parent = self.parent orelse return;
+            const parent = self.parent orelse break;
             const right = parent.children[1] == self;
             const right_i: usize = @intFromBool(right);
             const left_i: usize = @intFromBool(!right);
 
+            self.rotate(parent, left_i, right_i);
             if (parent.parent) |grandparent| {
                 const parent_right = grandparent.children[1] == parent;
                 if (right == parent_right) {
-                    self.rotateZigZig(parent, grandparent, left_i, right_i);
+                    parent.rotate(grandparent, left_i, right_i);
                 } else {
-                    self.rotateZigZag(parent, grandparent, left_i, right_i);
+                    parent.rotate(grandparent, right_i, left_i);
                 }
-            } else {
-                self.rotateZig(parent, left_i, right_i);
-                break;
-            }
+            } else break;
         }
     }
 
-    fn rotateZig(self: *Node, parent: *Node, left_i: usize, right_i: usize) void {
-        parent.children[left_i] = self.children[right_i];
-        self.children[right_i] = parent;
+    fn rotate(self: *Node, parent: *Node, left_i: usize, right_i: usize) void {
+        parent.children[right_i] = self.children[left_i];
+        self.children[left_i] = parent;
 
         self.parent = parent.parent;
         parent.parent = self;
 
-        parent.offset -= self.offset + self.str.len;
-    }
-
-    fn rotateZigZig(self: *Node, parent: *Node, grandparent: *Node, left_i: usize, right_i: usize) void {
-        grandparent.children[left_i] = parent.children[right_i];
-        parent.children[right_i] = grandparent;
-
-        parent.children[left_i] = self.children[right_i];
-        self.children[right_i] = parent;
-
-        self.parent = grandparent.parent;
-        parent.parent = self;
-        grandparent.parent = parent;
-
-        grandparent.offset -= parent.offset + parent.str.len;
-        parent.offset -= self.offset + self.str.len;
-    }
-
-    fn rotateZigZag(self: *Node, parent: *Node, grandparent: *Node, left_i: usize, right_i: usize) void {
-        parent.children[right_i] = self.children[left_i];
-        grandparent.children[left_i] = self.children[right_i];
-
-        self.children[left_i] = parent;
-        self.children[right_i] = grandparent;
-
-        self.parent = grandparent.parent;
-        parent.parent = self;
-        grandparent.parent = self;
-
-        self.offset += parent.offset + parent.str.len;
-        grandparent.offset -= self.offset + self.str.len;
+        if (right_i == 1) {
+            self.offset += parent.offset + parent.str.len;
+        } else {
+            parent.offset -= self.offset + self.str.len;
+        }
     }
 };
 
