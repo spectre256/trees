@@ -74,7 +74,6 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
     var relative_offset = offset;
     var parent: ?*Node = null;
     var maybe_node: ?*Node = self.root;
-    // Guaranteed to be defined as the loop will always run at least once
     var right: bool = undefined;
 
     while (maybe_node) |node| {
@@ -90,17 +89,13 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
             node.offset += str.len;
         }
 
-        std.debug.print("str: \"{s}\", offset: {d}, relative: {d}, going {s}\n", .{ node.str, node.offset, relative_offset, if (right) "right" else "left" });
-
-        // std.debug.print("{any}\n", .{node});
-        // const tmp = node;
         parent = node;
         maybe_node = node.children[@intFromBool(right)];
-        // parent = tmp;
     }
 
     const new_node = try self.insertStr(maybe_node, parent, relative_offset, str);
     if (parent) |parent_node| {
+        // Right is guaranteed to be defined here as the loop has to run at least once for the parent to be non-null
         parent_node.children[@intFromBool(right)] = new_node;
         new_node.splay();
     }
@@ -117,11 +112,9 @@ fn insertStr(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str
     });
 
     if (maybe_node) |node| {
-        if (offset >= node.str.len or offset == 0) {
-            std.debug.print("offset {d} out of bounds for string \"{s}\"\n", .{ offset, node.str });
-            // TODO Delete this check or free node
-            return error.OutOfBounds;
-        }
+        // Must insert in middle of string
+        // These cases are handled by insertion function
+        std.debug.assert(offset < node.str.len and offset != 0);
 
         const right_child = try self.addNode(.{
             .parent = new_node,
@@ -133,10 +126,9 @@ fn insertStr(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str
         // Reuse existing node as left child
         node.parent = new_node;
         node.children[1] = null;
-        node.offset = 0;
         node.str = node.str[0..offset];
 
-        new_node.offset = offset + node.;
+        new_node.offset = offset + node.offset;
         new_node.children = .{ node, right_child };
     }
 
@@ -176,14 +168,19 @@ fn printNode(maybe_node: ?*Node) void {
     }
 }
 
-pub fn testOffsets(self: *const Self, length: usize) !void {
-    _ = try self.testOffset(self.root, length);
+const testing = std.testing;
+const expectEqual = testing.expectEqual;
+const expectError = testing.expectError;
+const expectEqualSlices = testing.expectEqualSlices;
+
+pub fn expectOffsets(self: *const Self, length: usize) !void {
+    _ = try self.expectOffset(self.root, length);
 }
 
-fn testOffset(self: *const Self, maybe_node: ?*const Node, length: usize) !usize {
+fn expectOffset(self: *const Self, maybe_node: ?*const Node, length: usize) !usize {
     if (maybe_node) |node| {
-        const left_length = try self.testOffset(node.children[0], node.offset);
-        const right_length = try self.testOffset(node.children[1], length - node.offset - node.str.len);
+        const left_length = try self.expectOffset(node.children[0], node.offset);
+        const right_length = try self.expectOffset(node.children[1], length - node.offset - node.str.len);
         const actual_length = left_length + node.str.len + right_length;
         try expectEqual(length, actual_length);
         return actual_length;
@@ -192,11 +189,6 @@ fn testOffset(self: *const Self, maybe_node: ?*const Node, length: usize) !usize
         return 0;
     }
 }
-
-const testing = std.testing;
-const expectEqual = testing.expectEqual;
-const expectError = testing.expectError;
-const expectEqualSlices = testing.expectEqualSlices;
 
 fn expectInorder(self: *const Self, expected: []const []const u8) !void {
     const actual = try self.inorder(testing.allocator);
@@ -227,34 +219,58 @@ test "splay" {
     rope.root.children = .{ left, right };
 
     try rope.expectInorder(&.{ "1", "22", "333" });
-    try rope.testOffsets(6);
+    try rope.expectOffsets(6);
 
     const node = rope.root.children[1].?;
     node.splay();
     rope.root = node;
 
     try rope.expectInorder(&.{ "1", "22", "333" });
-    try rope.testOffsets(6);
+    try rope.expectOffsets(6);
 }
 
 test "basic insertion" {
     var rope: Self = try .init(testing.allocator, "Hello");
     defer rope.deinit();
 
-    rope.print();
     try rope.insert(5, ",");
-    rope.print();
     try rope.expectInorder(&.{ "Hello", "," });
+    try rope.expectOffsets(6);
 
     try rope.insert(6, "world");
-    rope.print();
     try rope.expectInorder(&.{ "Hello", ",", "world" });
+    try rope.expectOffsets(11);
 
-    try rope.insert(7, " ");
-    rope.print();
+    try rope.insert(6, " ");
     try rope.expectInorder(&.{ "Hello", ",", " ", "world" });
+    try rope.expectOffsets(12);
 
     try rope.insert(12, "!");
-    rope.print();
     try rope.expectInorder(&.{ "Hello", ",", " ", "world", "!" });
+    try rope.expectOffsets(13);
+}
+
+test "advanced insertion" {
+    var rope: Self = try .init(testing.allocator, "Hlord");
+    defer rope.deinit();
+
+    try rope.insert(1, "el");
+    try rope.expectInorder(&.{ "H", "el", "lord" });
+    try rope.expectOffsets(7);
+
+    try rope.insert(5, ", ");
+    try rope.expectInorder(&.{ "H", "el", "lo", ", ", "rd" });
+    try rope.expectOffsets(9);
+
+    try rope.insert(7, "wo");
+    try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "rd" });
+    try rope.expectOffsets(11);
+
+    try rope.insert(10, "l");
+    try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
+    try rope.expectOffsets(12);
+
+    try rope.insert(12, "!");
+    try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "r", "l", "d", "!" });
+    try rope.expectOffsets(13);
 }
