@@ -41,7 +41,6 @@ const Node = struct {
         parent.parent = self;
 
         if (right_i == 1) {
-            std.debug.print("Adding parent offset {d} and parent len {d} to string {s} with offset {d}\n", .{ parent.offset, parent.str.len, self.str, self.offset });
             self.offset += parent.offset + parent.str.len;
         } else {
             parent.offset -= self.offset + self.str.len;
@@ -74,12 +73,12 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
     // The length of everything to the left of the current node
     var relative_offset = offset;
     var parent: ?*Node = null;
-    var node: *Node = self.root;
+    var maybe_node: ?*Node = self.root;
     // Guaranteed to be defined as the loop will always run at least once
     var right: bool = undefined;
 
-    while (true) {
-        if (relative_offset >= node.offset and relative_offset <= node.offset + node.str.len) {
+    while (maybe_node) |node| {
+        if (relative_offset > node.offset and relative_offset < node.offset + node.str.len) {
             relative_offset -= node.offset;
             break;
         }
@@ -93,13 +92,14 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
 
         std.debug.print("str: \"{s}\", offset: {d}, relative: {d}, going {s}\n", .{ node.str, node.offset, relative_offset, if (right) "right" else "left" });
 
-        std.debug.print("{any}\n", .{node});
-        const tmp = node;
-        node = node.children[@intFromBool(right)] orelse break;
-        parent = tmp;
+        // std.debug.print("{any}\n", .{node});
+        // const tmp = node;
+        parent = node;
+        maybe_node = node.children[@intFromBool(right)];
+        // parent = tmp;
     }
 
-    const new_node = try self.insertStr(node, parent, relative_offset, str);
+    const new_node = try self.insertStr(maybe_node, parent, relative_offset, str);
     if (parent) |parent_node| {
         parent_node.children[@intFromBool(right)] = new_node;
         new_node.splay();
@@ -109,25 +109,20 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
     self.root = new_node;
 }
 
-fn insertStr(self: *Self, node: *Node, parent: ?*Node, offset: usize, str: []const u8) !*Node {
-    if (offset > node.str.len) {
-        std.debug.print("offset {d} out of bounds for string \"{s}\"\n", .{ offset, node.str });
-        return error.OutOfBounds;
-    }
-
+fn insertStr(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str: []const u8) !*Node {
     var new_node = try self.addNode(.{
         .parent = parent,
-        .offset = offset,
+        .offset = 0,
         .str = str,
     });
 
-    const at_start = offset == 0;
-    if (at_start or offset == node.str.len) {
-        new_node.children[@intFromBool(at_start)] = node;
+    if (maybe_node) |node| {
+        if (offset >= node.str.len or offset == 0) {
+            std.debug.print("offset {d} out of bounds for string \"{s}\"\n", .{ offset, node.str });
+            // TODO Delete this check or free node
+            return error.OutOfBounds;
+        }
 
-        node.parent = new_node;
-        node.offset = 0; // TODO: Is this right? What about children?
-    } else {
         const right_child = try self.addNode(.{
             .parent = new_node,
             .children = .{ null, node.children[1] },
@@ -141,6 +136,7 @@ fn insertStr(self: *Self, node: *Node, parent: ?*Node, offset: usize, str: []con
         node.offset = 0;
         node.str = node.str[0..offset];
 
+        new_node.offset = offset + node.;
         new_node.children = .{ node, right_child };
     }
 
