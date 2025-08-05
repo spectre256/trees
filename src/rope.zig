@@ -46,6 +46,31 @@ const Node = struct {
             parent.offset -= self.offset + self.str.len;
         }
     }
+
+    pub fn next(self: *Node) ?*Node {
+        return self.move(true);
+    }
+
+    pub fn prev(self: *Node) ?*Node {
+        return self.move(false);
+    }
+
+    inline fn move(self: *Node, right: bool) ?*Node {
+        const right_i: usize = @intFromBool(right);
+        const left_i: usize = @intFromBool(!right);
+        var node = self;
+
+        if (node.children[right_i]) |right_child| {
+            node = right_child;
+            while (node.children[left_i]) |left_child| : (node = left_child) {}
+        } else if (node.parent) |parent| {
+            // If node is a right child there is no right node
+            if (parent.children[right_i] == node) return null;
+            node = parent;
+        } else return null;
+
+        return node;
+    }
 };
 
 pub fn init(alloc: Allocator, str: []const u8) !Self {
@@ -197,6 +222,63 @@ fn expectInorder(self: *const Self, expected: []const []const u8) !void {
         try expectEqualSlices(u8, expected[i], actual[i]);
     }
     testing.allocator.free(actual);
+}
+
+test "inorder" {
+    // ("2" ("1" () ()) ("3" ("4" () ("5" () ()))))
+    var rope: Self = try .init(testing.allocator, "2");
+    defer rope.deinit();
+
+    const one = try rope.addNode(.{
+        .parent = rope.root,
+        .offset = 0,
+        .str = "1",
+    });
+
+    const three = try rope.addNode(.{
+        .parent = rope.root,
+        .offset = 2,
+        .str = "3",
+    });
+
+    const four = try rope.addNode(.{
+        .parent = three,
+        .offset = 0,
+        .str = "4",
+    });
+
+    const five = try rope.addNode(.{
+        .parent = four,
+        .offset = 0,
+        .str = "5",
+    });
+
+    rope.root.children = .{ one, three };
+    rope.root.offset = 1;
+    three.children[0] = four;
+    five.children[1] = five;
+
+    try rope.expectInorder(&.{ "1", "2", "3", "4", "5" });
+    try rope.expectOffsets(5);
+
+    var node: ?*Node = one;
+    node = node.?.next();
+    try expectEqual(rope.root, node);
+    node = node.?.next();
+    try expectEqual(three, node);
+    node = node.?.next();
+    try expectEqual(four, node);
+    node = node.?.next();
+    try expectEqual(five, node);
+
+    node = node.?.prev();
+    try expectEqual(four, node);
+    node = node.?.prev();
+    try expectEqual(three, node);
+    node = node.?.prev();
+    try expectEqual(rope.root, node);
+    node = node.?.prev();
+    try expectEqual(one, node);
 }
 
 test "splay" {
