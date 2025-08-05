@@ -14,8 +14,7 @@ const Node = struct {
     str: []const u8,
 
     pub fn splay(self: *Node) void {
-        while (true) {
-            const parent = self.parent orelse break;
+        while (self.parent) |parent| {
             const right = parent.children[1] == self;
             const right_i: usize = @intFromBool(right);
             const left_i: usize = @intFromBool(!right);
@@ -63,11 +62,13 @@ const Node = struct {
         if (node.children[right_i]) |right_child| {
             node = right_child;
             while (node.children[left_i]) |left_child| : (node = left_child) {}
-        } else if (node.parent) |parent| {
-            // If node is a right child there is no right node
-            if (parent.children[right_i] == node) return null;
-            node = parent;
-        } else return null;
+        } else {
+            while (node.parent) |parent| {
+                // If node is a left child, parent is the successor
+                defer node = parent;
+                if (parent.children[left_i] == node) break;
+            } else return null;
+        }
 
         return node;
     }
@@ -217,11 +218,13 @@ fn expectOffset(self: *const Self, maybe_node: ?*const Node, length: usize) !usi
 
 fn expectInorder(self: *const Self, expected: []const []const u8) !void {
     const actual = try self.inorder(testing.allocator);
+    defer testing.allocator.free(actual);
+    errdefer std.debug.print("Inorder slices are different:\n  expected: {any}\n  actual: {any}\n", .{ expected, actual });
+
     try expectEqual(expected.len, actual.len);
     for (0..actual.len) |i| {
         try expectEqualSlices(u8, expected[i], actual[i]);
     }
-    testing.allocator.free(actual);
 }
 
 test "inorder" {
@@ -235,9 +238,15 @@ test "inorder" {
         .str = "1",
     });
 
-    const three = try rope.addNode(.{
+    const five = try rope.addNode(.{
         .parent = rope.root,
         .offset = 2,
+        .str = "5",
+    });
+
+    const three = try rope.addNode(.{
+        .parent = five,
+        .offset = 0,
         .str = "3",
     });
 
@@ -247,16 +256,10 @@ test "inorder" {
         .str = "4",
     });
 
-    const five = try rope.addNode(.{
-        .parent = four,
-        .offset = 0,
-        .str = "5",
-    });
-
-    rope.root.children = .{ one, three };
+    rope.root.children = .{ one, five };
     rope.root.offset = 1;
-    three.children[0] = four;
-    five.children[1] = five;
+    five.children[0] = three;
+    three.children[1] = four;
 
     try rope.expectInorder(&.{ "1", "2", "3", "4", "5" });
     try rope.expectOffsets(5);
