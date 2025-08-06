@@ -119,7 +119,7 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
         maybe_node = node.children[@intFromBool(right)];
     }
 
-    const new_node = try self.insertStr(maybe_node, parent, relative_offset, str);
+    const new_node = try self.insertNode(maybe_node, parent, relative_offset, str);
     if (parent) |parent_node| {
         // Right is guaranteed to be defined here as the loop has to run at least once for the parent to be non-null
         parent_node.children[@intFromBool(right)] = new_node;
@@ -130,7 +130,7 @@ pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
     self.root = new_node;
 }
 
-fn insertStr(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str: []const u8) !*Node {
+fn insertNode(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str: []const u8) !*Node {
     var new_node = try self.addNode(.{
         .parent = parent,
         .offset = 0,
@@ -139,8 +139,8 @@ fn insertStr(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str
 
     if (maybe_node) |node| {
         // Must insert in middle of string
-        // These cases are handled by insertion function
-        std.debug.assert(offset < node.str.len and offset != 0);
+        // These cases are handled by the insert function
+        std.debug.assert(offset > 0 and offset < node.str.len);
 
         const right_child = try self.addNode(.{
             .parent = new_node,
@@ -161,8 +161,66 @@ fn insertStr(self: *Self, maybe_node: ?*Node, parent: ?*Node, offset: usize, str
     return new_node;
 }
 
+pub fn delete(self: *Self, start: usize, end: ?usize) !void {
+    // Find and split start node
+    // Find and split end node
+    // Save root of deleted subtree??
+    // Have to allocate new nodes for start and end that have updated strings
+
+    _ = self;
+    _ = start;
+    _ = end;
+}
+
+// Splits a node in two at offset. The node retains the side based on right.
+// Returns a new node with the other side
+fn splitNode(self: *Self, node: *Node, offset: usize, right: bool) !?*Node {
+    const right_i: usize = @intFromBool(right);
+    const left_i: usize = @intFromBool(!right);
+    const at_start = offset == 0;
+
+    // TODO: Handle updating the root where necessary (where changing parents?)
+    if (at_start or offset == node.str.len) {
+        if (at_start == right) {
+            // Change parents
+            const child = node.children[left_i];
+
+            if (node.parent) |parent| parent.children[right_i] = node;
+            node.children[left_i] = null;
+
+            if (child != null) child.?.parent = node.parent;
+            node.parent = null;
+
+            return node;
+        } else {
+            // Orphan child
+            const child = node.children[right_i];
+            node.children[right_i] = null;
+            if (child != null) child.?.parent = null;
+
+            return child;
+        }
+    } else {
+        const strs = .{ node.str[0..offset], node.str[offset..] };
+        const offsets = .{ 0, node.offset };
+
+        // New node becomes disconnected right subtree
+        var new_node = try self.addNode(.{
+            .offset = offsets[right_i],
+            .str = strs[right_i],
+        });
+        new_node.children[right_i] = node.children[right_i];
+        node.children[right_i] = null;
+        node.offset = offsets[right_i];
+        node.str = strs[left_i];
+
+        return node;
+    }
+}
+
 pub fn inorder(self: *const Self, alloc: Allocator) ![][]const u8 {
     var values: std.ArrayList([]const u8) = .init(alloc);
+    errdefer values.deinit();
 
     try self.inorderNode(self.root, &values);
 
