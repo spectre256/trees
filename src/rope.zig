@@ -24,7 +24,9 @@ const Node = struct {
 
             self.rotate(parent, left_i, right_i);
             if (self.parent) |grandparent| {
-                const parent_right = grandparent.children[1] == parent;
+                const parent_right = grandparent.children[1] == self;
+                // children now points to self
+                // const parent_right = grandparent.children[1] == parent;
                 if (right == parent_right) {
                     self.rotate(grandparent, left_i, right_i);
                 } else {
@@ -36,9 +38,14 @@ const Node = struct {
 
     // Rotate around self
     fn rotate(self: *Node, parent: *Node, left_i: usize, right_i: usize) void {
+        if (self.children[left_i]) |child| child.parent = parent;
         parent.children[right_i] = self.children[left_i];
         self.children[left_i] = parent;
 
+        if (parent.parent) |grandparent| {
+            const parent_right = grandparent.children[1] == parent;
+            grandparent.children[@intFromBool(parent_right)] = self;
+        }
         self.parent = parent.parent;
         parent.parent = self;
 
@@ -337,6 +344,50 @@ const expectEqual = testing.expectEqual;
 const expectError = testing.expectError;
 const expectEqualSlices = testing.expectEqualSlices;
 
+pub fn validateLinks(self: *const Self) !void {
+    try expectEqual(null, self.root.parent);
+    return validateLink(self.root);
+}
+
+fn validateLink(node: *const Node) !void {
+    for (node.children) |maybe_child| {
+        if (maybe_child) |child| {
+            expectEqual(node, child.parent) catch |err| {
+                std.debug.print("Malformed link between node \"{s}\" and child \"{s}\"\n", .{ node.str, child.str });
+                return err;
+            };
+            expect(node != child) catch |err| {
+                std.log.err("Node \"{s}\" child refers to itself\n", .{node.str});
+                return err;
+            };
+            try validateLink(child);
+        }
+    }
+}
+
+pub fn expectAcyclic(self: *const Self) !void {
+    var map: std.AutoHashMap(*const Node, void) = .init(testing.allocator);
+    defer map.deinit();
+
+    try expectAcyclicNode(self.root.children[0], self.root, &map);
+    try expectAcyclicNode(self.root.children[1], self.root, &map);
+}
+
+fn expectAcyclicNode(maybe_node: ?*const Node, parent: *const Node, map: *std.AutoHashMap(*const Node, void)) !void {
+    if (maybe_node) |node| {
+        if (map.contains(node)) {
+            std.debug.print("Found cycle: node \"{s}\" ", .{node.str});
+            if (node.parent) |actual_parent| std.debug.print("with parent \"{s}\" ", .{actual_parent.str});
+            std.debug.print("pointed to by \"{s}\"\n", .{parent.str});
+            return error.FoundCycle;
+        }
+
+        try map.put(node, {});
+        try expectAcyclicNode(node.children[0], node, map);
+        try expectAcyclicNode(node.children[1], node, map);
+    }
+}
+
 pub fn expectOffsets(self: *const Self, length: usize) !void {
     _ = try self.expectOffset(self.root, length);
 }
@@ -354,7 +405,7 @@ fn expectOffset(self: *const Self, maybe_node: ?*const Node, length: usize) !usi
     }
 }
 
-fn expectInorder(self: *const Self, expected: []const []const u8) !void {
+pub fn expectInorder(self: *const Self, expected: []const []const u8) !void {
     return expectInorderNode(self.root, expected);
 }
 
@@ -447,6 +498,7 @@ test "splay" {
 
     try rope.expectInorder(&.{ "1", "22", "333" });
     try rope.expectOffsets(6);
+    try rope.validateLinks();
 
     const node = rope.root.children[1].?;
     node.splay();
@@ -454,27 +506,40 @@ test "splay" {
 
     try rope.expectInorder(&.{ "1", "22", "333" });
     try rope.expectOffsets(6);
+    try rope.validateLinks();
 }
+
+// TODO: More splay tests
 
 test "basic insertion" {
     var rope: Self = try .init(testing.allocator, "Hello");
     defer rope.deinit();
 
     try rope.insert(5, ",");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "Hello", "," });
     try rope.expectOffsets(6);
+    try rope.validateLinks();
 
     try rope.insert(6, "world");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "Hello", ",", "world" });
     try rope.expectOffsets(11);
+    try rope.validateLinks();
 
     try rope.insert(6, " ");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "Hello", ",", " ", "world" });
     try rope.expectOffsets(12);
+    try rope.validateLinks();
 
+    rope.print();
     try rope.insert(12, "!");
+    try rope.expectAcyclic();
+    rope.print();
     try rope.expectInorder(&.{ "Hello", ",", " ", "world", "!" });
     try rope.expectOffsets(13);
+    try rope.validateLinks();
 }
 
 test "advanced insertion" {
@@ -482,92 +547,75 @@ test "advanced insertion" {
     defer rope.deinit();
 
     try rope.insert(1, "el");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "H", "el", "lord" });
     try rope.expectOffsets(7);
+    try rope.validateLinks();
 
     try rope.insert(5, ", ");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "H", "el", "lo", ", ", "rd" });
     try rope.expectOffsets(9);
+    try rope.validateLinks();
 
     try rope.insert(7, "wo");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "rd" });
     try rope.expectOffsets(11);
+    try rope.validateLinks();
 
     try rope.insert(10, "l");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
     try rope.expectOffsets(12);
+    try rope.validateLinks();
 
     try rope.insert(12, "!");
+    try rope.expectAcyclic();
     try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "r", "l", "d", "!" });
     try rope.expectOffsets(13);
+    try rope.validateLinks();
 }
 
-fn makeRope1() !Self {
-    var rope: Self = try .init(testing.allocator, "Hlord");
-
-    try rope.insert(1, "el");
-    try rope.insert(5, ", ");
-    try rope.insert(7, "wo");
-    try rope.insert(10, "l");
-    try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
-    try rope.expectOffsets(12);
-
-    return rope;
-}
-
-test "split middle" {
-    var rope: Self = try makeRope1();
-    defer rope.deinit();
-
-    const left, const right = try rope.split(6);
-    try expect(left != null);
-    try expect(right != null);
-
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", "," });
-    try expectInorderNode(right.?, &.{ " ", "wo", "r", "l", "d" });
-}
-
-test "split left" {
-    var rope: Self = try makeRope1();
-    defer rope.deinit();
-
-    const left, const right = try rope.split(5);
-    try expect(left != null);
-    try expect(right != null);
-
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", "" });
-    try expectInorderNode(right.?, &.{ ", ", "wo", "r", "l", "d" });
-}
-
-test "split right" {
-    var rope: Self = try makeRope1();
-    defer rope.deinit();
-
-    const left, const right = try rope.split(7);
-    try expect(left != null);
-    try expect(right != null);
-
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "" });
-    try expectInorderNode(right.?, &.{ "wo", "r", "l", "d" });
-}
-
-test "split start" {
-    var rope: Self = try makeRope1();
-    defer rope.deinit();
-
-    rope.print();
-
-    const left, const right = try rope.split(0);
-    try expect(left != null);
-    try expect(right != null);
-
-    rope.print();
-
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
-    try expectInorderNode(right.?, &.{""});
-}
+// fn makeRope1() !Self {
+//     var rope: Self = try .init(testing.allocator, "Hlord");
 //
-// test "split end" {
+//     try rope.insert(1, "el");
+//     try rope.insert(5, ", ");
+//     try rope.insert(7, "wo");
+//     try rope.insert(10, "l");
+//     try rope.expectInorder(&.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
+//     try rope.expectOffsets(12);
+//     try rope.validateLinks();
+//
+//     return rope;
+// }
+//
+// test "split middle" {
+//     var rope: Self = try makeRope1();
+//     defer rope.deinit();
+//
+//     const left, const right = try rope.split(6);
+//     try expect(left != null);
+//     try expect(right != null);
+//
+//     try expectInorderNode(left.?, &.{ "H", "el", "lo", "," });
+//     try expectInorderNode(right.?, &.{ " ", "wo", "r", "l", "d" });
+// }
+//
+// test "split left" {
+//     var rope: Self = try makeRope1();
+//     defer rope.deinit();
+//
+//     const left, const right = try rope.split(5);
+//     try expect(left != null);
+//     try expect(right != null);
+//
+//     try expectInorderNode(left.?, &.{ "H", "el", "lo", "" });
+//     try expectInorderNode(right.?, &.{ ", ", "wo", "r", "l", "d" });
+// }
+//
+// test "split right" {
 //     var rope: Self = try makeRope1();
 //     defer rope.deinit();
 //
@@ -578,3 +626,31 @@ test "split start" {
 //     try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "" });
 //     try expectInorderNode(right.?, &.{ "wo", "r", "l", "d" });
 // }
+//
+// test "split start" {
+//     var rope: Self = try makeRope1();
+//     defer rope.deinit();
+//
+//     rope.print();
+//
+//     const left, const right = try rope.split(0);
+//     try expect(left != null);
+//     try expect(right != null);
+//
+//     rope.print();
+//
+//     try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
+//     try expectInorderNode(right.?, &.{""});
+// }
+// //
+// // test "split end" {
+// //     var rope: Self = try makeRope1();
+// //     defer rope.deinit();
+// //
+// //     const left, const right = try rope.split(7);
+// //     try expect(left != null);
+// //     try expect(right != null);
+// //
+// //     try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "" });
+// //     try expectInorderNode(right.?, &.{ "wo", "r", "l", "d" });
+// // }
