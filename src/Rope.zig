@@ -4,7 +4,7 @@ const MemoryPool = std.heap.MemoryPool;
 
 const Self = @This();
 
-root: *Node,
+root: ?*Node = null,
 nodes: MemoryPool(Node),
 
 const Node = struct {
@@ -91,15 +91,8 @@ const Node = struct {
     }
 };
 
-pub fn init(alloc: Allocator, str: []const u8) !Self {
-    var self: Self = .{
-        .root = undefined,
-        .nodes = .init(alloc),
-    };
-
-    self.root = try self.addNode(.{ .offset = 0, .str = str });
-
-    return self;
+pub fn init(alloc: Allocator) Self {
+    return .{ .nodes = .init(alloc) };
 }
 
 pub fn deinit(self: *Self) void {
@@ -186,11 +179,11 @@ pub fn delete(self: *Self, from: usize, to_or_end: ?usize) !void {
 
         var offset = to;
         if (left) |left_node| offset -= left_node.offset + left_node.str.len;
-        self.root = deleted orelse unreachable; // TODO
+        self.root = deleted;
         deleted, const right = try self.split(offset);
-        self.root = Node.join(left, right) orelse try self.addNode(.empty); // TODO
+        self.root = Node.join(left, right);
     } else {
-        self.root = left orelse try self.addNode(.empty); // TODO: Should root be optional? For new buffers with no content or where all content has been deleted
+        self.root = left;
     }
 
     // TODO: Return a "change" which holds a reference to the deleted subtree
@@ -249,7 +242,27 @@ fn find(self: *const Self, offset: usize) ?*Node {
     return null;
 }
 
-pub fn inorder(node: *const Node, alloc: Allocator) ![][]const u8 {
+pub inline fn reader(self: *const Self, offset: usize) !Reader {
+    return .init(self, offset);
+}
+
+pub const Reader = struct {
+    node: *Node,
+    offset: usize,
+
+    pub fn init(rope: *const Self, offset: usize) !Reader {
+        const node = rope.find(offset) orelse return error.OutOfBounds;
+        return .{ .node = node, .offset = offset };
+    }
+
+    pub fn read(self: *Reader) ?[]const u8 {
+        self.node = self.node.next() orelse return null;
+        defer self.offset = 0;
+        return self.node.str[self.offset..];
+    }
+};
+
+pub fn inorder(node: ?*const Node, alloc: Allocator) ![][]const u8 {
     var values: std.ArrayList([]const u8) = .init(alloc);
     errdefer values.deinit();
 
@@ -302,8 +315,9 @@ pub fn expectAcyclic(self: *const Self) !void {
     var map: std.AutoHashMap(*const Node, void) = .init(testing.allocator);
     defer map.deinit();
 
-    try expectAcyclicNode(self.root.children[0], self.root, &map);
-    try expectAcyclicNode(self.root.children[1], self.root, &map);
+    const root = self.root orelse return;
+    try expectAcyclicNode(root.children[0], root, &map);
+    try expectAcyclicNode(root.children[1], root, &map);
 }
 
 fn expectAcyclicNode(maybe_node: ?*const Node, parent: *const Node, map: *std.AutoHashMap(*const Node, void)) !void {
@@ -325,7 +339,7 @@ pub fn expectInorder(self: *const Self, expected: []const []const u8) !void {
     return expectInorderNode(self.root, expected);
 }
 
-fn expectInorderNode(node: *const Node, expected: []const []const u8) !void {
+fn expectInorderNode(node: ?*const Node, expected: []const []const u8) !void {
     const actual = try inorder(node, testing.allocator);
     defer testing.allocator.free(actual);
     errdefer std.debug.print("Inorder slices are different:\n  expected: {any}\n  actual: {any}\n", .{ expected, actual });
@@ -354,8 +368,9 @@ fn expectOffsetsNode(self: *const Self, maybe_node: ?*const Node, length: usize)
 }
 
 pub fn expectLinked(self: *const Self) !void {
-    try expectEqual(null, self.root.parent);
-    return expectLinkedNode(self.root);
+    const root = self.root orelse return;
+    try expectEqual(null, root.parent);
+    return expectLinkedNode(root);
 }
 
 fn expectLinkedNode(node: *const Node) !void {
@@ -376,17 +391,15 @@ fn expectLinkedNode(node: *const Node) !void {
 
 test "inorder" {
     // ("2" ("1" () ()) ("3" ("4" () ("5" () ()))))
-    var rope: Self = try .init(testing.allocator, "2");
+    var rope: Self = .init(testing.allocator);
     defer rope.deinit();
 
     const one = try rope.addNode(.{
-        .parent = rope.root,
         .offset = 0,
         .str = "1",
     });
 
     const five = try rope.addNode(.{
-        .parent = rope.root,
         .offset = 2,
         .str = "5",
     });
@@ -403,8 +416,13 @@ test "inorder" {
         .str = "4",
     });
 
-    rope.root.children = .{ one, five };
-    rope.root.offset = 1;
+    rope.root = try rope.addNode(.{
+        .children = .{ one, five },
+        .offset = 1,
+        .str = "2",
+    });
+    one.parent = rope.root;
+    five.parent = rope.root;
     five.children[0] = three;
     three.children[1] = four;
 
@@ -431,27 +449,30 @@ test "inorder" {
 }
 
 test "splay" {
-    var rope: Self = try .init(testing.allocator, "22");
+    var rope: Self = .init(testing.allocator);
     defer rope.deinit();
 
     const left = try rope.addNode(.{
-        .parent = rope.root,
         .offset = 0,
         .str = "1",
     });
 
     const right = try rope.addNode(.{
-        .parent = rope.root,
         .offset = 0,
         .str = "333",
     });
 
-    rope.root.offset = 1;
-    rope.root.children = .{ left, right };
+    rope.root = try rope.addNode(.{
+        .children = .{ left, right },
+        .offset = 1,
+        .str = "22",
+    });
+    left.parent = rope.root;
+    right.parent = rope.root;
 
     try rope.validate(&.{ "1", "22", "333" });
 
-    const node = rope.root.children[1].?;
+    const node = rope.root.?.children[1].?;
     node.splay();
     rope.root = node;
 
@@ -461,8 +482,11 @@ test "splay" {
 // TODO: More splay tests
 
 test "basic insertion" {
-    var rope: Self = try .init(testing.allocator, "Hello");
+    var rope: Self = .init(testing.allocator);
     defer rope.deinit();
+
+    try rope.insert(0, "Hello");
+    try rope.validate(&.{"Hello"});
 
     try rope.insert(5, ",");
     try rope.validate(&.{ "Hello", "," });
@@ -478,8 +502,11 @@ test "basic insertion" {
 }
 
 test "advanced insertion" {
-    var rope: Self = try .init(testing.allocator, "Hlord");
+    var rope: Self = .init(testing.allocator);
     defer rope.deinit();
+
+    try rope.insert(0, "Hlord");
+    try rope.validate(&.{"Hlord"});
 
     try rope.insert(1, "el");
     try rope.validate(&.{ "H", "el", "lord" });
@@ -498,8 +525,9 @@ test "advanced insertion" {
 }
 
 fn makeRope1() !Self {
-    var rope: Self = try .init(testing.allocator, "Hlord");
+    var rope: Self = .init(testing.allocator);
 
+    try rope.insert(0, "Hlord");
     try rope.insert(1, "el");
     try rope.insert(5, ", ");
     try rope.insert(7, "wo");
