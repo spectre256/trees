@@ -15,6 +15,8 @@
           zig
           zls
           lldb
+          sdl3
+          sdl3-ttf
         ];
       };
     };

@@ -11,9 +11,13 @@ pub fn build(b: *std.Build) void {
     });
 
     const exe = b.addExecutable(.{
-        .name = "trees",
+        .name = "zinc",
         .root_module = exe_mod,
     });
+
+    exe.linkLibC();
+    exe.linkSystemLibrary("SDL3");
+    exe.linkSystemLibrary("SDL3_ttf");
 
     b.installArtifact(exe);
 
