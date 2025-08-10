@@ -198,19 +198,18 @@ fn split(self: *Self, offset: usize) ![2]?*Node {
     const node = self.find(offset) orelse return error.OutOfBounds;
     node.splay();
     self.root = node;
-    self.print();
 
     const relative_offset = offset - node.offset;
-    const at_start = offset == 0;
+    const at_end = relative_offset == node.str.len;
 
     std.debug.assert(relative_offset <= node.str.len);
-    if (at_start or relative_offset == node.str.len) {
-        const maybe_child = node.children[@intFromBool(at_start)];
+    if (relative_offset == 0 or at_end) {
+        const maybe_child = node.children[@intFromBool(at_end)];
         if (maybe_child) |child| {
+            node.children[@intFromBool(at_end)] = null;
             child.parent = null;
-            node.children[@intFromBool(at_start)] = null;
         }
-        return if (at_start) .{ maybe_child, node } else .{ node, maybe_child };
+        return if (at_end) .{ node, maybe_child } else .{ maybe_child, node };
     } else {
         // New node becomes left subtree
         var new_node = try self.addNode(.{
@@ -241,56 +240,6 @@ fn find(self: *const Self, offset: usize) ?*Node {
 
     return null;
 }
-
-// // Splits a node in two at offset. The node retains the side based on right.
-// // Returns a new node with the other side
-// fn splitNode(self: *Self, node: *Node, offset: usize, right: bool) !?*Node {
-//     const right_i: usize = @intFromBool(right);
-//     const left_i: usize = @intFromBool(!right);
-//     const at_start = offset == 0;
-//
-//     // TODO: Handle updating the root where necessary (where changing parents?)
-//     if (at_start or offset == node.str.len) {
-//         if (at_start == right) {
-//             // Change parents
-//             const child = node.children[left_i];
-//
-//             if (node.parent) |parent| {
-//                 parent.children[right_i] = node;
-//             } else {
-//                 self.root = node;
-//             }
-//             node.children[left_i] = null;
-//
-//             if (child != null) child.?.parent = node.parent;
-//             node.parent = null;
-//
-//             return node;
-//         } else {
-//             // Orphan child
-//             const child = node.children[right_i];
-//             if (child != null) child.?.parent = null;
-//             node.children[right_i] = null;
-//
-//             return child;
-//         }
-//     } else {
-//         const strs = .{ node.str[0..offset], node.str[offset..] };
-//         const offsets = .{ 0, node.offset };
-//
-//         // New node becomes disconnected right subtree
-//         var new_node = try self.addNode(.{
-//             .offset = offsets[right_i],
-//             .str = strs[right_i],
-//         });
-//         new_node.children[right_i] = node.children[right_i];
-//         node.children[right_i] = null;
-//         node.offset = offsets[right_i];
-//         node.str = strs[left_i];
-//
-//         return node;
-//     }
-// }
 
 pub fn inorder(node: *const Node, alloc: Allocator) ![][]const u8 {
     var values: std.ArrayList([]const u8) = .init(alloc);
@@ -572,7 +521,7 @@ test "split left" {
     try expect(left != null);
     try expect(right != null);
 
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", "" });
+    try expectInorderNode(left.?, &.{ "H", "el", "lo" });
     try expectInorderNode(right.?, &.{ ", ", "wo", "r", "l", "d" });
 }
 
@@ -584,7 +533,7 @@ test "split right" {
     try expect(left != null);
     try expect(right != null);
 
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "" });
+    try expectInorderNode(left.?, &.{ "H", "el", "lo", ", " });
     try expectInorderNode(right.?, &.{ "wo", "r", "l", "d" });
 }
 
@@ -592,26 +541,21 @@ test "split start" {
     var rope: Self = try makeRope1();
     defer rope.deinit();
 
-    rope.print();
-
     const left, const right = try rope.split(0);
+    try expect(left == null);
+    try expect(right != null);
+
+    try expectInorderNode(right.?, &.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
+}
+
+test "split end" {
+    var rope: Self = try makeRope1();
+    defer rope.deinit();
+
+    const left, const right = try rope.split(1);
     try expect(left != null);
     try expect(right != null);
 
-    rope.print();
-
-    try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "wo", "r", "l", "d" });
-    try expectInorderNode(right.?, &.{""});
+    try expectInorderNode(left.?, &.{"H"});
+    try expectInorderNode(right.?, &.{ "el", "lo", ", ", "wo", "r", "l", "d" });
 }
-
-// test "split end" {
-//     var rope: Self = try makeRope1();
-//     defer rope.deinit();
-//
-//     const left, const right = try rope.split(7);
-//     try expect(left != null);
-//     try expect(right != null);
-//
-//     try expectInorderNode(left.?, &.{ "H", "el", "lo", ", ", "" });
-//     try expectInorderNode(right.?, &.{ "wo", "r", "l", "d" });
-// }
