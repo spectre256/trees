@@ -82,9 +82,10 @@ const Node = struct {
         if (left == null or right == null) {
             return left orelse right;
         } else {
-            left.maximum().splay(); // This guarantees a null right child
-            std.debug.assert(left.children[1] == null);
-            left.children[1] = right;
+            left.?.maximum().splay(); // This guarantees a null right child
+            std.debug.assert(left.?.children[1] == null);
+            right.?.parent = left;
+            left.?.children[1] = right;
             return left;
         }
     }
@@ -183,8 +184,10 @@ pub fn delete(self: *Self, from: usize, to_or_end: ?usize) !void {
     if (to_or_end) |to| {
         std.debug.assert(to > from);
 
+        var offset = to;
+        if (left) |left_node| offset -= left_node.offset + left_node.str.len;
         self.root = deleted orelse unreachable; // TODO
-        deleted, const right = try self.split(to);
+        deleted, const right = try self.split(offset);
         self.root = Node.join(left, right) orelse try self.addNode(.empty); // TODO
     } else {
         self.root = left orelse try self.addNode(.empty); // TODO: Should root be optional? For new buffers with no content or where all content has been deleted
@@ -206,22 +209,27 @@ fn split(self: *Self, offset: usize) ![2]?*Node {
     if (relative_offset == 0 or at_end) {
         const maybe_child = node.children[@intFromBool(at_end)];
         if (maybe_child) |child| {
+            if (!at_end) node.offset = 0;
             node.children[@intFromBool(at_end)] = null;
             child.parent = null;
         }
         return if (at_end) .{ node, maybe_child } else .{ maybe_child, node };
     } else {
-        // New node becomes left subtree
+        // New node becomes right subtree
         var new_node = try self.addNode(.{
             .offset = 0,
-            .str = node.str[0..relative_offset],
+            .str = node.str[relative_offset..],
         });
-        new_node.children[0] = node.children[0];
-        // Original node becomes right subtree
-        node.children[0] = null;
-        node.str = node.str[relative_offset..];
+        if (node.children[1]) |child| {
+            child.parent = new_node;
+            new_node.children[1] = child;
+        }
 
-        return .{ new_node, node };
+        // Original node becomes left subtree
+        node.children[1] = null;
+        node.str = node.str[0..relative_offset];
+
+        return .{ node, new_node };
     }
 }
 
@@ -558,4 +566,32 @@ test "split end" {
 
     try expectInorderNode(left.?, &.{"H"});
     try expectInorderNode(right.?, &.{ "el", "lo", ", ", "wo", "r", "l", "d" });
+}
+
+test "deletion start and end" {
+    var rope: Self = try makeRope1();
+    defer rope.deinit();
+
+    try rope.delete(0, 5);
+    try rope.validate(&.{ ", ", "wo", "r", "l", "d" });
+
+    try rope.delete(5, null);
+    try rope.validate(&.{ ", ", "wo", "r" });
+}
+
+test "deletion middle" {
+    var rope: Self = try makeRope1();
+    defer rope.deinit();
+
+    try rope.delete(4, 6);
+    try rope.validate(&.{ "H", "el", "l", " ", "wo", "r", "l", "d" });
+
+    try rope.delete(6, 8);
+    try rope.validate(&.{ "H", "el", "l", " ", "w", "l", "d" });
+
+    try rope.delete(2, 3);
+    try rope.validate(&.{ "H", "e", "l", " ", "w", "l", "d" });
+
+    try rope.delete(3, 6);
+    try rope.validate(&.{ "H", "e", "l", "d" });
 }
