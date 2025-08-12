@@ -105,6 +105,15 @@ inline fn addNode(self: *Self, node: Node) !*Node {
     return node_ptr;
 }
 
+pub inline fn isEmpty(self: *const Self) bool {
+    return self.root == null;
+}
+
+pub fn clear(self: *Self) void {
+    _ = self.nodes.reset(.free_all); // TODO: Handle this error
+    self.root = null;
+}
+
 pub fn insert(self: *Self, offset: usize, str: []const u8) !void {
     // The length of everything to the left of the current node
     var relative_offset = offset;

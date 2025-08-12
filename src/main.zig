@@ -1,9 +1,13 @@
 const std = @import("std");
-const Gui = @import("Gui.zig");
+const Editor = @import("Editor.zig");
 
 pub fn main() !void {
-    var gui: Gui = try .init(.{});
-    defer gui.deinit();
+    var gpa: std.heap.GeneralPurposeAllocator(.{}) = .init;
+    const alloc = gpa.allocator();
 
-    gui.run();
+    var editor: Editor = try .init(alloc);
+    defer editor.deinit();
+
+    try editor.buffer().open("src/main.zig");
+    editor.run();
 }

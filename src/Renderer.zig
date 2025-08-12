@@ -6,6 +6,7 @@ const c = @cImport({
 
 window: *c.SDL_Window,
 renderer: *c.SDL_Renderer,
+text_engine: *c.TTF_TextEngine,
 font: *c.TTF_Font,
 
 const Self = @This();
@@ -42,45 +43,12 @@ pub fn init(options: WindowOptions) !Self {
         return error.FailedLoadFont;
     };
 
+    self.text_engine = c.TTF_CreateRendererTextEngine(self.renderer) orelse {
+        std.log.err("Couldn't create text engine: {s}\n", .{c.SDL_GetError()});
+        return error.FailedCreateTextEngine;
+    };
+
     return self;
-}
-
-pub fn run(self: *Self) void {
-    var go = true;
-    var event: c.SDL_Event = undefined;
-
-    while (go) {
-        while (c.SDL_PollEvent(&event)) {
-            switch (event.type) {
-                c.SDL_EVENT_QUIT => go = false,
-                else => {},
-            }
-        }
-
-        _ = c.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
-        _ = c.SDL_RenderClear(self.renderer);
-        self.render();
-        _ = c.SDL_RenderPresent(self.renderer);
-    }
-}
-
-fn render(self: *Self) void {
-    const color: c.SDL_Color = .{ .r = 255, .g = 255, .b = 255, .a = c.SDL_ALPHA_OPAQUE };
-    const text = c.TTF_RenderText_Blended(self.font, "Hello, world!", 0, color) orelse return;
-    defer c.SDL_DestroySurface(text);
-    const texture = c.SDL_CreateTextureFromSurface(self.renderer, text);
-    defer c.SDL_DestroyTexture(texture);
-
-    const scale: f32 = 4.0;
-    var w: c_int = undefined;
-    var h: c_int = undefined;
-    var dst: c.SDL_FRect = undefined;
-    _ = c.SDL_GetRenderOutputSize(self.renderer, &w, &h);
-    _ = c.SDL_SetRenderScale(self.renderer, scale, scale);
-    _ = c.SDL_GetTextureSize(texture, &dst.w, &dst.h);
-    dst.x = (@as(f32, @floatFromInt(w)) / scale - dst.w) / 2;
-    dst.y = (@as(f32, @floatFromInt(h)) / scale - dst.h) / 2;
-    _ = c.SDL_RenderTexture(self.renderer, texture, null, &dst);
 }
 
 pub fn deinit(self: *Self) void {
@@ -88,4 +56,18 @@ pub fn deinit(self: *Self) void {
     c.TTF_Quit();
     c.SDL_DestroyRenderer(self.renderer);
     c.SDL_DestroyWindow(self.window);
+}
+
+pub fn clear(self: *Self) void {
+    _ = c.SDL_SetRenderDrawColor(self.renderer, 0, 0, 0, 255);
+    _ = c.SDL_RenderClear(self.renderer);
+}
+
+pub fn present(self: *Self) void {
+    _ = c.SDL_RenderPresent(self.renderer);
+}
+
+pub fn renderText(self: *Self, str: []const u8, x: f32, y: f32) void {
+    const text = c.TTF_CreateText(self.text_engine, self.font, str.ptr, str.len) orelse return;
+    _ = c.TTF_DrawRendererText(text, x, y);
 }
