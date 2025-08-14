@@ -4,7 +4,7 @@ const Allocator = std.mem.Allocator;
 const File = std.fs.File;
 const Rope = @import("Rope.zig");
 
-text: Rope,
+rope: Rope,
 file: ?File = null,
 raw: []align(std.heap.page_size_min) u8,
 cursor: Cursor,
@@ -26,14 +26,14 @@ const Cursor = struct {
 
 pub fn init(alloc: Allocator) Self {
     return .{
-        .text = .init(alloc),
+        .rope = .init(alloc),
         .raw = "",
         .cursor = .default,
     };
 }
 
 pub fn deinit(self: *Self) void {
-    self.text.deinit();
+    self.rope.deinit();
     if (self.file != null) self.close();
 }
 
@@ -47,8 +47,8 @@ pub fn open(self: *Self, filename: []const u8) !void {
     errdefer self.close();
 
     // TODO: Undo/redo integration
-    if (!self.text.isEmpty()) self.text.clear();
-    try self.text.insert(0, self.raw);
+    if (!self.rope.isEmpty()) self.rope.reset();
+    try self.rope.insert(0, self.raw);
 }
 
 // Closes file and resets buffer
@@ -58,5 +58,5 @@ pub fn close(self: *Self) void {
     self.raw = "";
     self.file.?.close();
     self.file = null;
-    self.text.clear();
+    self.rope.reset();
 }

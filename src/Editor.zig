@@ -56,6 +56,20 @@ pub fn run(self: *Self) void {
 
 fn render(self: *Self) void {
     self.renderer.clear();
-    self.renderer.renderText("Hello, world!", 0, 0);
+    var text_renderer = self.renderer.textRenderer();
+    const rope = self.buffer().rope;
+    var cursor = self.buffer().cursor;
+    cursor.offset = 3;
+
+    var reader = rope.reader(0, cursor.offset);
+    while (reader.read()) |str| text_renderer.write(str) catch {};
+    const x = text_renderer.x;
+    reader = rope.reader(cursor.offset, null);
+    while (reader.read()) |str| text_renderer.write(str) catch {};
+
+    const y = text_renderer.line_height * @as(f32, @floatFromInt(cursor.line)); // TODO: current line, not absolute
+    self.renderer.setColor(255, 255, 255, 255);
+    self.renderer.renderRect(x, y, 2, text_renderer.line_height) catch {};
+
     self.renderer.present();
 }

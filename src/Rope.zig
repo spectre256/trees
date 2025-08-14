@@ -89,6 +89,14 @@ const Node = struct {
             return left;
         }
     }
+
+    pub fn length(self: ?*Node) usize {
+        var len: usize = 0;
+        var maybe_node = self;
+        return while (maybe_node) |node| : (maybe_node = node.children[1]) {
+            len += node.offset + node.str.len;
+        } else len;
+    }
 };
 
 pub fn init(alloc: Allocator) Self {
@@ -109,8 +117,12 @@ pub inline fn isEmpty(self: *const Self) bool {
     return self.root == null;
 }
 
-pub fn clear(self: *Self) void {
-    _ = self.nodes.reset(.free_all); // TODO: Handle this error
+pub fn length(self: *const Self) usize {
+    return Node.length(self.root);
+}
+
+pub fn reset(self: *Self) void {
+    _ = self.nodes.reset(.free_all);
     self.root = null;
 }
 
@@ -200,7 +212,7 @@ pub fn delete(self: *Self, from: usize, to_or_end: ?usize) !void {
 
 // Splits rope at offset. Returns left and right subtrees. Does not update root
 fn split(self: *Self, offset: usize) ![2]?*Node {
-    const node = self.find(offset) orelse return error.OutOfBounds;
+    const node, _ = self.find(offset) orelse return error.OutOfBounds;
     node.splay();
     self.root = node;
 
@@ -236,12 +248,14 @@ fn split(self: *Self, offset: usize) ![2]?*Node {
 }
 
 // Find the node containing offset, if there is one
-fn find(self: *const Self, offset: usize) ?*Node {
+// Returns the node and the offset into that node
+fn find(self: *const Self, offset: usize) ?struct { *Node, usize } {
     var maybe_node: ?*Node = self.root;
     var relative_offset = offset;
 
     while (maybe_node) |node| {
-        if (relative_offset >= node.offset and relative_offset <= node.offset + node.str.len) return node;
+        if (relative_offset >= node.offset and relative_offset <= node.offset + node.str.len)
+            return .{ node, relative_offset };
 
         const right = relative_offset >= node.offset + node.str.len;
         if (right) relative_offset -= node.offset + node.str.len;
@@ -251,23 +265,31 @@ fn find(self: *const Self, offset: usize) ?*Node {
     return null;
 }
 
-pub inline fn reader(self: *const Self, offset: usize) !Reader {
-    return .init(self, offset);
+pub inline fn reader(self: *const Self, from: usize, to: ?usize) Reader {
+    return .init(self, from, to);
 }
 
+// TODO: Read until newline?
 pub const Reader = struct {
-    node: *Node,
+    node: ?*Node,
     offset: usize,
+    len: usize,
 
-    pub fn init(rope: *const Self, offset: usize) !Reader {
-        const node = rope.find(offset) orelse return error.OutOfBounds;
-        return .{ .node = node, .offset = offset };
+    pub fn init(rope: *const Self, from: usize, to: ?usize) Reader {
+        const node, const offset = rope.find(from) orelse .{ null, 0 };
+        std.debug.assert(to == null or to.? >= from);
+        const len = if (to == null) rope.length() else to.? - from;
+        return .{ .node = node, .offset = offset, .len = len };
     }
 
     pub fn read(self: *Reader) ?[]const u8 {
-        self.node = self.node.next() orelse return null;
-        defer self.offset = 0;
-        return self.node.str[self.offset..];
+        const node = self.node orelse return null;
+        const len = @min(self.len, node.str.len);
+        const str = node.str[self.offset..len];
+        self.len -= len;
+        self.node = node.next();
+        self.offset = 0;
+        return str;
     }
 };
 
@@ -314,9 +336,9 @@ const expectEqualSlices = testing.expectEqualSlices;
 pub fn validate(self: *const Self, expected: []const []const u8) !void {
     try self.expectAcyclic();
     try self.expectInorder(expected);
-    var length: usize = 0;
-    for (expected) |str| length += str.len;
-    try self.expectOffsets(length);
+    var len: usize = 0;
+    for (expected) |str| len += str.len;
+    try self.expectOffsets(len);
     try self.expectLinked();
 }
 
@@ -359,19 +381,19 @@ fn expectInorderNode(node: ?*const Node, expected: []const []const u8) !void {
     }
 }
 
-pub fn expectOffsets(self: *const Self, length: usize) !void {
-    _ = try self.expectOffsetsNode(self.root, length);
+pub fn expectOffsets(self: *const Self, len: usize) !void {
+    _ = try self.expectOffsetsNode(self.root, len);
 }
 
-fn expectOffsetsNode(self: *const Self, maybe_node: ?*const Node, length: usize) !usize {
+fn expectOffsetsNode(self: *const Self, maybe_node: ?*const Node, len: usize) !usize {
     if (maybe_node) |node| {
-        const left_length = try self.expectOffsetsNode(node.children[0], node.offset);
-        const right_length = try self.expectOffsetsNode(node.children[1], length - node.offset - node.str.len);
-        const actual_length = left_length + node.str.len + right_length;
-        try expectEqual(length, actual_length);
-        return actual_length;
+        const left_len = try self.expectOffsetsNode(node.children[0], node.offset);
+        const right_len = try self.expectOffsetsNode(node.children[1], len - node.offset - node.str.len);
+        const actual_len = left_len + node.str.len + right_len;
+        try expectEqual(len, actual_len);
+        return actual_len;
     } else {
-        try expectEqual(length, 0);
+        try expectEqual(len, 0);
         return 0;
     }
 }
